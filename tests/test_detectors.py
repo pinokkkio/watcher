@@ -65,6 +65,13 @@ def test_defaults_only_current_moves():
     assert d.process([q(106, value=1e9)], b, T0) == []
 
 
+def test_sigma_spikes_off_by_default():
+    d = Detector(Config())
+    b = base(sigma=0.002)  # очень тихая бумага: +0.3% за минуту — это >10σ, но ниже порога 2%
+    d.process([q(100)], b, T0)
+    assert d.process([q(100.3)], b, T0 + timedelta(minutes=1)) == []
+
+
 def test_no_liquidity_filter():
     d = Detector(Config())
     # оборот почти нулевой — всё равно сообщаем о движении

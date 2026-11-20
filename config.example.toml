@@ -9,7 +9,7 @@ db_path = "data/history.sqlite"
 alerts_log = "data/alerts.jsonl"   # "" — не писать журнал
 # Какие сигналы слать. Сейчас — только текущие движения за окно (fast_window_min).
 # Доступны: FAST_MOVE, ANOMALY_FAST (за окно), STRONG_DAY, ANOMALY_DAY (за день)
-signals = ["FAST_MOVE", "ANOMALY_FAST"]
+signals = ["FAST_MOVE"]
 digest_interval_min = 0       # сводка «самые волатильные сегодня» раз в N минут; 0 — выключена
 digest_top = 10
 console = true

@@ -45,8 +45,8 @@ DEFAULT_THRESHOLDS: dict[str, Thresholds] = {
 
 
 ALL_SIGNALS = ("STRONG_DAY", "ANOMALY_DAY", "FAST_MOVE", "ANOMALY_FAST")
-# Пока — только текущие движения за окно; дневные сигналы включаются через signals / WATCH_SIGNALS
-DEFAULT_SIGNALS = frozenset({"FAST_MOVE", "ANOMALY_FAST"})
+# Пока — только сильные движения за окно (порог в %); остальное включается через signals / WATCH_SIGNALS
+DEFAULT_SIGNALS = frozenset({"FAST_MOVE"})
 
 
 def parse_signals(value: str | list[str]) -> frozenset[str]:

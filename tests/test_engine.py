@@ -75,10 +75,10 @@ def test_signals_config(tmp_path, monkeypatch):
     from moex_watcher.cli import startup_message
 
     cfg = load_config(None)
-    assert cfg.signals == {"FAST_MOVE", "ANOMALY_FAST"} and cfg.digest_interval_min == 0
+    assert cfg.signals == {"FAST_MOVE"} and cfg.digest_interval_min == 0
     msg = startup_message(cfg)
     assert "движение за последние 15 мин: акции ≥2%, облигации ≥2%, фьючерсы ≥3%" in msg
-    assert "за день" not in msg
+    assert "за день" not in msg and "σ" not in msg
     monkeypatch.setenv("WATCH_SIGNALS", "fast_move,strong_day")
     assert load_config(None).signals == {"FAST_MOVE", "STRONG_DAY"}
     monkeypatch.setenv("WATCH_SIGNALS", "nope")

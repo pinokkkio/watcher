@@ -61,9 +61,8 @@ class Watcher:
     def digest(self) -> str:
         parts = []
         for spec in self.cfg.markets:
-            th = self.cfg.th(spec.asset_class)
             rows = rank_intraday(self.quotes.get(spec.key, []), self.baselines,
-                                 min_value_today=th.min_value_today, top=self.cfg.digest_top, by="range")
+                                 top=self.cfg.digest_top, by="range")
             if rows:
                 parts.append(format_digest(rows, f"Самые волатильные сегодня — {spec.title}:"))
         return "\n\n".join(parts)

@@ -8,7 +8,6 @@
 Аномалия — движение, необычное для самого инструмента:
   * ANOMALY_DAY  — дневное изменение ≥ z_day сигм его исторической дневной волатильности;
   * ANOMALY_FAST — изменение за окно ≥ z_fast сигм, отмасштабированных на длину окна;
-  * VOLUME_SPIKE — оборот в разы выше обычного для этого времени дня.
 """
 from __future__ import annotations
 
@@ -29,13 +28,6 @@ def _fmt_pct(x: float) -> str:
     return f"{x:+.2f}%"
 
 
-def session_fraction(now: datetime, th: Thresholds) -> float:
-    t = now.astimezone(MSK)
-    h, m = map(int, th.session_start.split(":"))
-    elapsed = (t.hour * 60 + t.minute) - (h * 60 + m)
-    return min(1.0, max(0.0, elapsed / th.session_minutes))
-
-
 class Detector:
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
@@ -43,7 +35,6 @@ class Detector:
         self._day: date | None = None
         self._level_hit: dict[tuple[Key, int], int] = {}
         self._z_hit: dict[tuple[Key, int], float] = {}
-        self._rvol_hit: dict[Key, float] = {}
         self._fast_at: dict[tuple[Key, int], datetime] = {}  # пауза отдельно для роста и падения
         self._fast_size: dict[tuple[Key, int], float] = {}
 
@@ -55,7 +46,6 @@ class Detector:
             self.prices.clear()
             self._level_hit.clear()
             self._z_hit.clear()
-            self._rvol_hit.clear()
             self._fast_at.clear()
             self._fast_size.clear()
 
@@ -101,18 +91,10 @@ class Detector:
             window = timedelta(minutes=th.fast_window_min)
             self._record(q, now, keep=window * 2)
             base = baselines.get(q.board, {}).get(q.secid)
-            if not self._liquid(q, base, th):
-                continue
             reasons = self._check(q, base, th, now, window)
             if reasons:
                 alerts.append(Alert(quote=q, reasons=reasons, ts=now))
         return alerts
-
-    @staticmethod
-    def _liquid(q: Quote, base: Baseline | None, th: Thresholds) -> bool:
-        if (q.value_today or 0) < th.min_value_today:
-            return False
-        return base is None or base.avg_value >= th.min_avg_value
 
     def _check(self, q: Quote, base: Baseline | None, th: Thresholds, now: datetime,
                window: timedelta) -> list[Reason]:
@@ -171,14 +153,4 @@ class Detector:
                 self._fast_size[dkey] = abs(ret)
                 reasons.extend(fast)
 
-        # 5. Всплеск оборота
-        if "VOLUME_SPIKE" in enabled and base and base.avg_value > 0 and q.value_today:
-            expected = base.avg_value * max(session_fraction(now, th), 0.1)
-            rv = q.value_today / expected
-            prev = self._rvol_hit.get(key)
-            if rv >= th.rvol and (prev is None or rv >= prev * 2):
-                self._rvol_hit[key] = rv
-                reasons.append(Reason("VOLUME_SPIKE",
-                                      f"оборот ×{rv:.1f} к норме ({q.value_today / 1e6:,.0f} млн ₽)", True,
-                                      f"оборот ×{rv:.1f}"))
         return reasons

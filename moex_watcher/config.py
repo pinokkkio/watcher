@@ -20,12 +20,9 @@ class Thresholds:
     z_day: float = 3.0  # дневное изменение в сигмах дневной волатильности
     z_fast: float = 4.0  # изменение за окно в сигмах (σ_дня · √(окно/сессия))
     z_step: float = 1.0  # повторный алерт при росте z на столько сигм
-    rvol: float = 3.0  # оборот к «нормальному на это время» во столько раз
-    # Фильтры ликвидности, руб.
-    min_value_today: float = 3_000_000
-    min_avg_value: float = 10_000_000
-    cooldown_min: float = 15.0  # пауза между повторными FAST-алертами по инструменту
-    session_start: str = "10:00"  # МСК, для оценки «ожидаемого к этому часу» оборота
+    cooldown_min: float = 15.0  # пауза между сигналами по бумаге в одну сторону
+    # Длина торговой сессии (МСК) — для пересчёта дневной σ в σ за окно
+    session_start: str = "10:00"
     session_end: str = "23:50"
 
     @property
@@ -38,17 +35,16 @@ class Thresholds:
 DEFAULT_THRESHOLDS: dict[str, Thresholds] = {
     "shares": Thresholds(),
     "bonds": Thresholds(
-        day_levels=[1.0, 2.0, 3.0, 5.0, 10.0], fast_move_pct=1.0, z_day=3.5, z_fast=5.0,
-        min_value_today=1_000_000, min_avg_value=3_000_000, session_end="18:50",
+        day_levels=[1.0, 2.0, 3.0, 5.0, 10.0], fast_move_pct=2.0, z_day=3.5, z_fast=5.0,
+        session_end="18:50",
     ),
     "futures": Thresholds(
-        day_levels=[2.0, 4.0, 6.0, 10.0], fast_move_pct=1.5, min_value_today=10_000_000,
-        min_avg_value=50_000_000, session_start="09:00",
+        day_levels=[2.0, 4.0, 6.0, 10.0], fast_move_pct=3.0, session_start="09:00",
     ),
 }
 
 
-ALL_SIGNALS = ("STRONG_DAY", "ANOMALY_DAY", "FAST_MOVE", "ANOMALY_FAST", "VOLUME_SPIKE")
+ALL_SIGNALS = ("STRONG_DAY", "ANOMALY_DAY", "FAST_MOVE", "ANOMALY_FAST")
 # Пока — только текущие движения за окно; дневные сигналы включаются через signals / WATCH_SIGNALS
 DEFAULT_SIGNALS = frozenset({"FAST_MOVE", "ANOMALY_FAST"})
 

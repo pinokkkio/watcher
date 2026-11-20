@@ -66,7 +66,7 @@ def test_load_config(tmp_path):
     assert [m.board for m in cfg.markets] == ["TQBR", "RFUD"]
     assert cfg.th("shares").fast_move_pct == 2.5
     assert cfg.th("shares").day_levels == [3.0, 5.0, 7.0, 10.0, 15.0]
-    assert cfg.th("bonds").fast_move_pct == 1.0
+    assert cfg.th("bonds").fast_move_pct == 2.0 and cfg.th("futures").fast_move_pct == 3.0
     assert cfg.telegram_channel == "@moex_alerts"
 
 
@@ -77,7 +77,7 @@ def test_signals_config(tmp_path, monkeypatch):
     cfg = load_config(None)
     assert cfg.signals == {"FAST_MOVE", "ANOMALY_FAST"} and cfg.digest_interval_min == 0
     msg = startup_message(cfg)
-    assert "движение за последние 15 мин: акции ≥2%, облигации ≥1%, фьючерсы ≥1.5%" in msg
+    assert "движение за последние 15 мин: акции ≥2%, облигации ≥2%, фьючерсы ≥3%" in msg
     assert "за день" not in msg
     monkeypatch.setenv("WATCH_SIGNALS", "fast_move,strong_day")
     assert load_config(None).signals == {"FAST_MOVE", "STRONG_DAY"}

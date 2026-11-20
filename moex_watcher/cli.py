@@ -63,8 +63,7 @@ def signals_description(cfg: Config) -> str:
         lines.append(f"• движение за последние {win:g} мин: {parts}")
     if "ANOMALY_FAST" in cfg.signals:
         lines.append(f"• необычное для бумаги движение за то же окно: ≥{cfg.th('shares').z_fast:g}σ")
-    day = {"STRONG_DAY": "сильное движение за день", "ANOMALY_DAY": "аномалия за день (σ)",
-           "VOLUME_SPIKE": "всплеск оборота"}
+    day = {"STRONG_DAY": "сильное движение за день", "ANOMALY_DAY": "аномалия за день (σ)"}
     lines += [f"• {t}" for k, t in day.items() if k in cfg.signals]
     return "\n".join(lines) or "• нет (все сигналы выключены)"
 
@@ -106,18 +105,16 @@ def cmd_volatile(args: argparse.Namespace, cfg: Config) -> int:
     store = HistoryStore(cfg.db_path)
     days = args.days or cfg.history_days
     for spec in cfg.markets:
-        th = cfg.th(spec.asset_class)
         store.ensure(spec, client, days)
         base = store.baselines(spec.board, days, min_obs=min(10, max(2, days - 1)))
         quotes = client.snapshot(spec) if args.mode != "hist" else []
         names = {q.secid: q.name for q in quotes}
-        min_avg = th.min_avg_value if args.min_value is None else args.min_value
+        min_value = args.min_value or 0.0
         if args.mode == "hist":
-            rows = rank_historical(base, spec.key, names, min_avg_value=min_avg, top=args.top)
+            rows = rank_historical(base, spec.key, names, min_avg_value=min_value, top=args.top)
             title = f"\n{spec.title} ({spec.board}): топ-{args.top} по исторической волатильности за {days} дн."
         else:
-            min_today = th.min_value_today if args.min_value is None else args.min_value
-            rows = rank_intraday(quotes, {spec.board: base}, min_value_today=min_today, top=args.top,
+            rows = rank_intraday(quotes, {spec.board: base}, min_value_today=min_value, top=args.top,
                                  by=args.mode)
             label = {"range": "дневному диапазону", "move": "изменению за день", "z": "изменению в сигмах"}
             title = f"\n{spec.title} ({spec.board}): топ-{args.top} сегодня по {label[args.mode]}"
@@ -143,7 +140,7 @@ def main(argv: list[str] | None = None) -> int:
                         "hist — историческая волатильность (по умолчанию range)")
     v.add_argument("--days", type=int, help="глубина истории, торговых дней")
     v.add_argument("--top", type=int, default=20)
-    v.add_argument("--min-value", type=float, help="минимальный оборот, руб. (по умолчанию из порогов)")
+    v.add_argument("--min-value", type=float, help="минимальный оборот, руб. (по умолчанию без фильтра)")
     v.set_defaults(func=cmd_volatile)
 
     args = p.parse_args(argv)

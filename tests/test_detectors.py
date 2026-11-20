@@ -61,8 +61,26 @@ def feed(d, b, prices, t, step=timedelta(seconds=30)):
 def test_defaults_only_current_moves():
     d = Detector(Config())
     b = base(sigma=0.005, avg_value=1e9)
-    # +6% за день, 12σ, оборот ×7 — но всё это дневные сигналы, по умолчанию выключены
+    # +6% за день, 12σ — но это дневные сигналы, по умолчанию выключены
     assert d.process([q(106, value=1e9)], b, T0) == []
+
+
+def test_no_liquidity_filter():
+    d = Detector(Config())
+    # оборот почти нулевой — всё равно сообщаем о движении
+    d.process([q(100, value=0)], {}, T0)
+    al = d.process([q(103, value=0)], {}, T0 + timedelta(minutes=1))
+    assert kinds(al) == ["FAST_MOVE"]
+
+
+def test_bond_and_futures_thresholds():
+    d = Detector(Config())
+    bq = lambda p: q(p, secid="OFZ", cls="bonds", board="TQOB")
+    fq = lambda p: q(p, secid="SiZ6", cls="futures", board="RFUD")
+    d.process([bq(100), fq(100)], {}, T0)
+    assert d.process([bq(101.9), fq(102.9)], {}, T0 + timedelta(minutes=1)) == []
+    al = d.process([bq(102.1), fq(103.1)], {}, T0 + timedelta(minutes=2))
+    assert sorted(a.quote.secid for a in al) == ["OFZ", "SiZ6"]
 
 
 def test_move_within_15_min_window():
@@ -126,20 +144,6 @@ def test_anomaly_fast_for_quiet_instrument():
         t += timedelta(seconds=30)
     al = d.process([q(100.6)], b, t)  # +0.6% за 5 мин: ниже 1.5%, но ≫ σ окна
     assert "ANOMALY_FAST" in kinds(al) and "FAST_MOVE" not in kinds(al)
-
-
-def test_volume_spike():
-    d = Detector(all_cfg())
-    # 12:00 МСК — прошло ~14% сессии; средний оборот 1 млрд → ожидаем ~140 млн, факт 1 млрд
-    al = d.process([q(100.1, value=1e9)], base(sigma=0.05, avg_value=1e9), T0)
-    assert kinds(al) == ["VOLUME_SPIKE"]
-    assert kinds(d.process([q(100.1, value=1.2e9)], base(sigma=0.05, avg_value=1e9), T0)) == []
-
-
-def test_illiquid_filtered():
-    d = Detector(all_cfg())
-    assert d.process([q(120, value=1e5)], base(), T0) == []
-    assert d.process([q(120, value=1e8)], base(avg_value=1e6), T0) == []
 
 
 def test_state_resets_next_day():

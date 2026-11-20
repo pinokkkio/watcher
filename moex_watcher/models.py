@@ -64,7 +64,7 @@ class Baseline:
 
 @dataclass(slots=True)
 class Reason:
-    kind: str  # STRONG_DAY | FAST_MOVE | ANOMALY_DAY | ANOMALY_FAST | VOLUME_SPIKE
+    kind: str  # STRONG_DAY | ANOMALY_DAY | FAST_MOVE | ANOMALY_FAST
     text: str
     anomaly: bool  # True — аномалия (относительно собственной волатильности/объёма)
     short: str = ""  # краткая форма для сводного сообщения

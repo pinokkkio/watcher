@@ -36,9 +36,9 @@ def format_alert(a: Alert, markup: bool = False) -> str:
 
 
 MARKET_TAG = {"ofz": "ОФЗ", "corp_bonds": "обл.", "futures": "фьюч.", "etf": "БПИФ"}
-# порядок причин в строке: день → короткое окно → объём
-DAY_KINDS = {"STRONG_DAY", "ANOMALY_DAY", "VOLUME_SPIKE"}
-KIND_ORDER = ["STRONG_DAY", "ANOMALY_DAY", "FAST_MOVE", "ANOMALY_FAST", "VOLUME_SPIKE"]
+# порядок причин в строке: день → короткое окно
+DAY_KINDS = {"STRONG_DAY", "ANOMALY_DAY"}
+KIND_ORDER = ["STRONG_DAY", "ANOMALY_DAY", "FAST_MOVE", "ANOMALY_FAST"]
 
 
 def merge_alerts(old: Alert, new: Alert) -> Alert:
@@ -267,8 +267,10 @@ class TelegramNotifier:
                 self.session.verify = _combined_ca_bundle(proxy_ca)
             log.info("Telegram: запросы через прокси %s", self.proxy_display)
 
-    def _call(self, method: str, payload: dict) -> dict | None:
-        """Вызов Bot API через прокси. Возвращает result или None (причина пишется в лог)."""
+    def _call(self, method: str, payload: dict, quiet: bool = False) -> dict | None:
+        """Вызов Bot API через прокси. Возвращает result или None (причина пишется в лог).
+
+        quiet=True — ответы 4xx не логируются (для пробных запросов)."""
         url = f"{self.api}/{method}"
         for attempt in range(1, self.retries + 1):
             try:
@@ -303,6 +305,8 @@ class TelegramNotifier:
                     log.error("Telegram: неверный TELEGRAM_TOKEN (401 Unauthorized)")
                     return None
                 if r.status_code < 500:
+                    if quiet:
+                        return None
                     desc = _describe(r)
                     hint = next((h for k, h in CHANNEL_HINTS if k in desc.lower()), None)
                     log.error("Telegram %s %s (%s): %s%s", method, r.status_code, self.chat_id, desc,
@@ -326,15 +330,55 @@ class TelegramNotifier:
                         chat["type"])
         return True
 
+    def _try_channel_prefix(self) -> dict | None:
+        """id канала из адресной строки web.telegram.org идёт без префикса -100 — пробуем с ним."""
+        cid = self.chat_id
+        if not re.fullmatch(r"-?\d+", cid) or cid.startswith("-100"):
+            return None
+        candidate = "-100" + cid.lstrip("-")
+        chat = self._call("getChat", {"chat_id": candidate}, quiet=True)
+        if chat is None:
+            return None
+        log.warning("Telegram: канал найден как %s (а не %s) — у id каналов в Bot API префикс -100. "
+                    "Использую %s; поправьте TELEGRAM_CHANNEL=%s", candidate, cid, candidate, candidate)
+        self.chat_id = candidate
+        return chat
+
+    def known_chats(self) -> list[dict]:
+        """Каналы и группы из недавних обновлений бота (добавление бота, посты в канале), до 24 ч."""
+        updates = self._call("getUpdates", {"allowed_updates": ["my_chat_member", "channel_post", "message"]},
+                             quiet=True) or []
+        seen: dict[int, dict] = {}
+        for u in updates if isinstance(updates, list) else []:
+            for k in ("my_chat_member", "channel_post", "message", "edited_channel_post"):
+                chat = (u.get(k) or {}).get("chat")
+                if chat and chat.get("type") != "private":
+                    seen[chat["id"]] = chat
+        return list(seen.values())
+
+    def _log_known_chats(self) -> None:
+        chats = self.known_chats()
+        if not chats:
+            log.error("Telegram: добавьте бота в канал администратором с правом публикации — после этого "
+                      "при следующем запуске здесь будет показан id канала. Либо укажите @имя публичного канала")
+            return
+        for c in chats:
+            log.error("Telegram: бот недавно видел «%s» (%s) — TELEGRAM_CHANNEL=%s",
+                      c.get("title") or c.get("username"), c.get("type"), c.get("id"))
+
     def verify(self) -> bool:
         """Проверка при старте: токен, доступность канала, права бота на публикацию."""
         me = self._call("getMe", {})
         if me is None:
             return False
         bot = f"@{me.get('username')}"
-        chat = self._call("getChat", {"chat_id": self.chat_id})
+        chat = self._call("getChat", {"chat_id": self.chat_id}, quiet=True)
         if chat is None:
-            log.error("Telegram: бот %s не видит канал %s", bot, self.chat_id)
+            chat = self._try_channel_prefix()
+        if chat is None:
+            log.error("Telegram: бот %s не видит канал %s (chat not found) — проверьте id/@имя и что бот "
+                      "добавлен в канал администратором", bot, self.chat_id)
+            self._log_known_chats()
             return False
         title, ctype = chat.get("title") or chat.get("username") or self.chat_id, chat.get("type")
         if ctype != "channel":

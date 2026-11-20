@@ -15,11 +15,23 @@ CHAT = {"id": -1001234567890, "type": "channel", "title": "MOEX alerts", "userna
 MEMBER = {"status": "administrator", "can_post_messages": True}
 
 
+UPDATES: list = []
+
+
+class NotFound(Exception):
+    pass
+
+
 def fake_bot_api(path, body):
     method = path.rsplit("/", 1)[-1]
     if method == "getMe":
         return {"id": 777, "is_bot": True, "username": "moex_watch_bot"}
+    if method == "getUpdates":
+        return list(UPDATES)
     if method == "getChat":
+        cid = str(json.loads(body)["chat_id"])
+        if cid not in (str(CHAT["id"]), "@" + CHAT["username"]):
+            raise NotFound
         return dict(CHAT)
     if method == "getChatMember":
         return dict(MEMBER)
@@ -47,7 +59,15 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
-        out = json.dumps({"ok": True, "result": fake_bot_api(self.path, body)}).encode()
+        try:
+            out = json.dumps({"ok": True, "result": fake_bot_api(self.path, body)}).encode()
+        except NotFound:
+            out = json.dumps({"ok": False, "error_code": 400, "description": "Bad Request: chat not found"}).encode()
+            self.send_response(400)
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+            return
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(out)))
@@ -268,3 +288,22 @@ def test_missing_settings_are_reported(monkeypatch, caplog, tmp_path):
     n = cli.build_notifier(load_config(None))
     assert not any(isinstance(x, TelegramNotifier) for x in n.notifiers)
     assert "Telegram ВЫКЛЮЧЕН: не задано TELEGRAM_CHANNEL" in caplog.text
+
+
+def test_channel_id_without_minus100_is_fixed(proxy, caplog):
+    tg = _tg(proxy, channel="-1234567890")  # как в адресной строке web.telegram.org
+    assert tg.verify()
+    assert tg.chat_id == "-1001234567890"
+    assert "поправьте TELEGRAM_CHANNEL=-1001234567890" in caplog.text
+    assert "chat not found" not in caplog.text  # пробный запрос не шумит
+
+
+def test_unknown_channel_lists_known_chats(proxy, caplog, monkeypatch):
+    UPDATES[:] = [{"update_id": 1, "my_chat_member": {"chat": {"id": -1009999, "type": "channel",
+                                                               "title": "Мой канал"}}}]
+    try:
+        tg = _tg(proxy, channel="-1005555")
+        assert not tg.verify()
+        assert "бот недавно видел «Мой канал» (channel) — TELEGRAM_CHANNEL=-1009999" in caplog.text
+    finally:
+        UPDATES.clear()

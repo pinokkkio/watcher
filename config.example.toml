@@ -1,0 +1,54 @@
+# Скопируйте в config.toml и поправьте под себя. Все параметры необязательные.
+
+[general]
+# Рынки: shares (TQBR), etf (TQTF), ofz (TQOB), corp_bonds (TQCB), futures (RFUD)
+watch = ["shares", "ofz", "corp_bonds", "futures"]
+poll_interval_sec = 30        # период опроса
+history_days = 60             # глубина истории для σ и среднего оборота, торговых дней
+db_path = "data/history.sqlite"
+alerts_log = "data/alerts.jsonl"   # "" — не писать журнал
+digest_interval_min = 60      # сводка «самые волатильные сегодня»; 0 — выключить
+digest_top = 10
+console = true
+
+# Пороги по классам активов: shares / bonds / futures.
+# Указывайте только то, что хотите поменять.
+[thresholds.shares]
+day_levels = [3, 5, 7, 10, 15]   # % к закрытию прошлого дня — «сильное движение»
+fast_window_min = 5              # окно быстрого движения, мин
+fast_move_pct = 1.5              # % за окно — «сильное быстрое движение»
+z_day = 3.0                      # аномалия: дневное изменение в σ
+z_fast = 4.0                     # аномалия: изменение за окно в σ
+rvol = 3.0                       # аномалия: оборот ×N к норме на это время
+min_value_today = 3_000_000      # фильтр ликвидности: оборот сегодня, ₽
+min_avg_value = 10_000_000       # фильтр ликвидности: средний дневной оборот, ₽
+cooldown_min = 15
+
+[thresholds.bonds]
+day_levels = [1, 2, 3, 5, 10]
+fast_move_pct = 0.7
+
+[thresholds.futures]
+day_levels = [2, 4, 6, 10]
+fast_move_pct = 1.0
+
+# Свой режим торгов, например фьючерсы на юань отдельно не нужны,
+# а вот акции в режиме T+ USD или другие доски — так:
+# [markets.my_board]
+# asset_class = "shares"
+# engine = "stock"
+# market = "shares"
+# board = "TQBR"
+# title = "Мои акции"
+
+[telegram]
+# token = "123456:ABC..."   # бот от @BotFather
+# chat_id = "123456789"     # ваш chat_id или id канала
+
+[webhook]
+# url = "https://example.com/hook"
+
+[iss]
+# Логин MOEX Passport. С платной подпиской ISS отдаёт данные без 15-минутной задержки.
+# login = ""
+# password = ""

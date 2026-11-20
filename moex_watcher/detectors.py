@@ -119,7 +119,8 @@ class Detector:
             if lvl >= 0 and lvl > self._level_hit.get((key, sign), -1):
                 self._level_hit[(key, sign)] = lvl
                 reasons.append(Reason("STRONG_DAY",
-                                      f"{_fmt_pct(chg)} за день (порог {th.day_levels[lvl]:g}%)", False))
+                                      f"{_fmt_pct(chg)} за день (порог {th.day_levels[lvl]:g}%)", False,
+                                      f"{'≥' if sign > 0 else '≤'}{sign * th.day_levels[lvl]:+g}% за день"))
             # 2. Аномальное дневное движение в сигмах
             if sigma and q.log_change is not None:
                 z = q.log_change / sigma
@@ -127,7 +128,8 @@ class Detector:
                 if abs(z) >= th.z_day and (prev is None or abs(z) >= prev + th.z_step):
                     self._z_hit[(key, sign)] = abs(z)
                     reasons.append(Reason("ANOMALY_DAY",
-                                          f"{z:+.1f}σ за день (обычная дневная σ {sigma * 100:.2f}%)", True))
+                                          f"{z:+.1f}σ за день (обычная дневная σ {sigma * 100:.2f}%)", True,
+                                          f"{z:+.1f}σ за день"))
 
         # 3/4. Быстрое движение за окно
         wr = self.window_return(key, now, window)
@@ -136,12 +138,14 @@ class Detector:
             ret, span = wr
             fast: list[Reason] = []
             if abs(ret) * 100 >= th.fast_move_pct:
-                fast.append(Reason("FAST_MOVE", f"{_fmt_pct(ret * 100)} за {span:.0f} мин", False))
+                fast.append(Reason("FAST_MOVE", f"{_fmt_pct(ret * 100)} за {span:.0f} мин", False,
+                                   f"{ret * 100:+.1f}% за {span:.0f} мин"))
             if sigma and ret > -1:
                 zf = math.log1p(ret) / (sigma * math.sqrt(th.fast_window_min / th.session_minutes))
                 if abs(zf) >= th.z_fast:
                     fast.append(Reason("ANOMALY_FAST",
-                                       f"{zf:+.1f}σ за {span:.0f} мин ({_fmt_pct(ret * 100)})", True))
+                                       f"{zf:+.1f}σ за {span:.0f} мин ({_fmt_pct(ret * 100)})", True,
+                                       f"{zf:+.1f}σ за {span:.0f} мин"))
             if fast:
                 self._fast_at[key] = now
                 reasons.extend(fast)
@@ -154,5 +158,6 @@ class Detector:
             if rv >= th.rvol and (prev is None or rv >= prev * 2):
                 self._rvol_hit[key] = rv
                 reasons.append(Reason("VOLUME_SPIKE",
-                                      f"оборот ×{rv:.1f} к норме ({q.value_today / 1e6:,.0f} млн ₽)", True))
+                                      f"оборот ×{rv:.1f} к норме ({q.value_today / 1e6:,.0f} млн ₽)", True,
+                                      f"оборот ×{rv:.1f}"))
         return reasons

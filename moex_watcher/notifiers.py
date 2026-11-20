@@ -35,10 +35,80 @@ def format_alert(a: Alert, markup: bool = False) -> str:
     return "\n".join([head, price, *body])
 
 
+MARKET_TAG = {"ofz": "ОФЗ", "corp_bonds": "обл.", "futures": "фьюч.", "etf": "БПИФ"}
+# порядок причин в строке: день → короткое окно → объём
+KIND_ORDER = ["STRONG_DAY", "ANOMALY_DAY", "FAST_MOVE", "ANOMALY_FAST", "VOLUME_SPIKE"]
+
+
+def merge_alerts(old: Alert, new: Alert) -> Alert:
+    """Сливает два алерта по одному инструменту: свежая котировка, последний текст по каждому типу."""
+    by_kind = {r.kind: r for r in old.reasons}
+    by_kind.update({r.kind: r for r in new.reasons})
+    return Alert(quote=new.quote, reasons=list(by_kind.values()), ts=new.ts)
+
+
+def _kind_rank(kind: str) -> int:
+    return KIND_ORDER.index(kind) if kind in KIND_ORDER else len(KIND_ORDER)
+
+
+def alert_line(a: Alert) -> str:
+    """Одна строка на инструмент (HTML)."""
+    q = a.quote
+    chg = q.change_pct
+    icon = "🟢" if (chg or 0) >= 0 else "🔴"
+    tag = MARKET_TAG.get(q.market)
+    name = html.escape(q.name if q.name != q.secid else "")
+    unit = "%" if q.asset_class == "bonds" else ""
+    head = f"{icon} <b>{html.escape(q.secid)}</b>" + (f" {name}" if name else "") + (f" [{tag}]" if tag else "")
+    price = f"{q.last:g}{unit}" + (f" ({chg:+.2f}%)" if chg is not None else "")
+    details = "; ".join(html.escape(r.short or r.text) for r in sorted(a.reasons, key=lambda r: _kind_rank(r.kind)))
+    return f"{head} {price} — {details}"
+
+
+def format_batch(alerts: list[Alert], digest: str | None = None, now: datetime | None = None,
+                 max_lines: int = 30, limit: int = 4000) -> str:
+    """Одно сообщение: аномалии, затем сильные движения (по убыванию |изменения|), затем сводка."""
+    def strength(a: Alert) -> float:
+        return abs(a.quote.change_pct or 0)
+
+    anomalies = sorted((a for a in alerts if a.is_anomaly), key=strength, reverse=True)
+    strong = sorted((a for a in alerts if not a.is_anomaly), key=strength, reverse=True)
+    ts = (now or datetime.now().astimezone()).strftime("%H:%M")
+    header = f"📊 <b>MOEX · {ts}</b>" + (f" · сигналов: {len(alerts)}" if alerts else "")
+
+    sections: list[tuple[str, list[str]]] = []
+    if anomalies:
+        sections.append(("⚠️ <b>Аномалии</b>", [alert_line(a) for a in anomalies]))
+    if strong:
+        sections.append(("📈 <b>Сильные движения</b>", [alert_line(a) for a in strong]))
+
+    def render(budget: int) -> tuple[str, int]:
+        parts, shown = [header], 0
+        for title, lines in sections:
+            take = lines[: max(0, budget - shown)]
+            if take:
+                parts.append(title + "\n" + "\n".join(take))
+                shown += len(take)
+        hidden = len(alerts) - shown
+        if hidden > 0:
+            parts.append(f"…и ещё {hidden} (полный список — в журнале alerts.jsonl)")
+        if digest:
+            parts.append(html.escape(digest))
+        return "\n\n".join(parts), shown
+
+    budget = max_lines
+    text, _ = render(budget)
+    while len(text) > limit and budget > 0:
+        budget -= 1
+        text, _ = render(budget)
+    return text[:limit]
+
+
 class Notifier(Protocol):
     def send_alerts(self, alerts: list[Alert]) -> None: ...
     def send_text(self, text: str) -> None: ...
     def send_status(self, text: str) -> None: ...
+    def flush(self, force: bool = False) -> None: ...
 
 
 class ConsoleNotifier:
@@ -52,6 +122,9 @@ class ConsoleNotifier:
 
     def send_status(self, text: str) -> None:
         print(text + "\n", flush=True)
+
+    def flush(self, force: bool = False) -> None:
+        pass
 
 
 class JsonlNotifier:
@@ -77,6 +150,9 @@ class JsonlNotifier:
         with self.path.open("a", encoding="utf-8") as f:
             f.write(json.dumps({"ts": datetime.now().astimezone().isoformat(), "status": text},
                                ensure_ascii=False) + "\n")
+
+    def flush(self, force: bool = False) -> None:
+        pass
 
 
 def build_proxy_url(proxy: str, user: str | None = None, password: str | None = None) -> str:
@@ -151,14 +227,21 @@ CHANNEL_HINTS = (
 
 
 class TelegramNotifier:
-    LIMIT = 4000
 
     def __init__(self, token: str, channel: str, proxy: str | None = None,
                  proxy_user: str | None = None, proxy_password: str | None = None,
                  api_base: str = "https://api.telegram.org", session: requests.Session | None = None,
-                 retries: int = 3, proxy_ca: str | None = None) -> None:
+                 retries: int = 3, proxy_ca: str | None = None, batch_sec: float = 60.0,
+                 max_lines: int = 30, clock=time.monotonic) -> None:
         self.url = f"{api_base.rstrip('/')}/bot{token}/sendMessage"
         self.chat_id = normalize_channel(channel)
+        # Сигналы копятся batch_sec секунд и уходят одним сообщением
+        self.batch_sec = batch_sec
+        self.max_lines = max_lines
+        self._clock = clock
+        self._pending: dict[tuple[str, str], Alert] = {}
+        self._digest: str | None = None
+        self._since: float | None = None
         self.retries = retries
         self.session = session or requests.Session()
         self.proxy_display = None
@@ -208,23 +291,34 @@ class TelegramNotifier:
             time.sleep(min(2 ** attempt, 10))
         return False
 
-    def _send_chunks(self, parts: list[str]) -> None:
-        buf = ""
-        for p in parts:
-            if buf and len(buf) + len(p) + 2 > self.LIMIT:
-                self._post(buf)
-                buf = ""
-            buf = f"{buf}\n\n{p}" if buf else p
-        if buf:
-            self._post(buf[: self.LIMIT])
-
     def send_alerts(self, alerts: list[Alert]) -> None:
-        # аномалии — первыми
-        ordered = sorted(alerts, key=lambda a: not a.is_anomaly)
-        self._send_chunks([format_alert(a, markup=True) for a in ordered])
+        for a in alerts:
+            old = self._pending.get(a.quote.key)
+            self._pending[a.quote.key] = merge_alerts(old, a) if old else a
+        if alerts and self._since is None:
+            self._since = self._clock()
+        self.flush()
 
     def send_text(self, text: str) -> None:
-        self._send_chunks([f"<pre>{html.escape(text)}</pre>"])
+        """Сводка уходит в том же сообщении, что и накопленные сигналы."""
+        self._digest = text
+        if self._since is None:
+            self._since = self._clock()
+        self.flush()
+
+    @property
+    def pending(self) -> int:
+        return len(self._pending)
+
+    def flush(self, force: bool = False) -> None:
+        if self._since is None:
+            return
+        if not force and self._clock() - self._since < self.batch_sec:
+            return
+        alerts, digest = list(self._pending.values()), self._digest
+        self._pending, self._digest, self._since = {}, None, None
+        if alerts or digest:
+            self._post(format_batch(alerts, digest, max_lines=self.max_lines))
 
     def send_status(self, text: str) -> None:
         self._post(html.escape(text, quote=False))
@@ -262,6 +356,9 @@ class WebhookNotifier:
     def send_status(self, text: str) -> None:
         self._post({"type": "status", "text": text})
 
+    def flush(self, force: bool = False) -> None:
+        pass
+
 
 class MultiNotifier:
     def __init__(self, notifiers: list[Notifier]) -> None:
@@ -279,3 +376,7 @@ class MultiNotifier:
     def send_status(self, text: str) -> None:
         for n in self.notifiers:
             n.send_status(text)
+
+    def flush(self, force: bool = False) -> None:
+        for n in self.notifiers:
+            n.flush(force)

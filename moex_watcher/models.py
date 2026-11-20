@@ -67,6 +67,7 @@ class Reason:
     kind: str  # STRONG_DAY | FAST_MOVE | ANOMALY_DAY | ANOMALY_FAST | VOLUME_SPIKE
     text: str
     anomaly: bool  # True — аномалия (относительно собственной волатильности/объёма)
+    short: str = ""  # краткая форма для сводного сообщения
 
 
 @dataclass(slots=True)

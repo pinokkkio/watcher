@@ -51,6 +51,8 @@ fast_move_pct = 1.0
 # proxy_user = "user"
 # proxy_password = "secret"                  # спецсимволы экранировать не нужно
 # proxy_ca = "certs/proxy-ca.pem"            # если сертификат прокси самоподписанный
+batch_sec = 60    # копить сигналы и отправлять одним сообщением раз в N секунд
+max_lines = 30    # максимум инструментов в сообщении, остальные — «…и ещё N»
 
 [webhook]
 # url = "https://example.com/hook"

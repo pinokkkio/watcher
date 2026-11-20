@@ -69,6 +69,12 @@ class Watcher:
         return "\n\n".join(parts)
 
     def run(self, once: bool = False) -> None:
+        try:
+            self._loop(once)
+        finally:
+            self.notifier.flush(force=True)  # не теряем накопленное при остановке
+
+    def _loop(self, once: bool) -> None:
         self.refresh_baselines(force=True)
         while True:
             started = time.monotonic()
@@ -81,6 +87,7 @@ class Watcher:
                     text = self.digest()
                     if text:
                         self.notifier.send_text(text)
+                self.notifier.flush()
             except Exception:  # noqa: BLE001
                 log.exception("Ошибка в цикле опроса")
             if once:

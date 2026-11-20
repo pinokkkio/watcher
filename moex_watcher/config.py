@@ -68,6 +68,8 @@ class Config:
     telegram_proxy_password: str | None = None
     telegram_proxy_ca: str | None = None  # PEM-сертификат https-прокси, если он самоподписанный
     telegram_api_base: str = "https://api.telegram.org"
+    telegram_batch_sec: float = 60.0  # копить сигналы и слать одним сообщением раз в N секунд
+    telegram_max_lines: int = 30  # максимум строк-инструментов в одном сообщении
     webhook_url: str | None = None
     iss_login: str | None = None
     iss_password: str | None = None
@@ -105,6 +107,10 @@ def _apply_env(cfg: Config) -> None:
         v = os.environ.get(env)
         if v:
             setattr(cfg, attr, v)
+    for env, attr, typ in (("TELEGRAM_BATCH_SEC", "telegram_batch_sec", float),
+                           ("TELEGRAM_MAX_LINES", "telegram_max_lines", int)):
+        if os.environ.get(env):
+            setattr(cfg, attr, typ(os.environ[env]))
     if os.environ.get("WATCH_MARKETS"):
         keys = [k.strip() for k in os.environ["WATCH_MARKETS"].split(",") if k.strip()]
         bad = [k for k in keys if k not in DEFAULT_MARKETS]
@@ -150,6 +156,10 @@ def _apply_file(cfg: Config, path: str | Path) -> None:
     cfg.telegram_proxy_password = tg.get("proxy_password") or None
     cfg.telegram_proxy_ca = tg.get("proxy_ca") or None
     cfg.telegram_api_base = tg.get("api_base") or cfg.telegram_api_base
+    if "batch_sec" in tg:
+        cfg.telegram_batch_sec = float(tg["batch_sec"])
+    if "max_lines" in tg:
+        cfg.telegram_max_lines = int(tg["max_lines"])
     cfg.webhook_url = raw.get("webhook", {}).get("url") or None
     iss = raw.get("iss", {})
     cfg.iss_login = iss.get("login") or None

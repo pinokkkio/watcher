@@ -28,7 +28,8 @@ def build_notifier(cfg: Config) -> MultiNotifier:
         ns.append(TelegramNotifier(cfg.telegram_token, cfg.telegram_channel, proxy=cfg.telegram_proxy,
                                    proxy_user=cfg.telegram_proxy_user,
                                    proxy_password=cfg.telegram_proxy_password,
-                                   proxy_ca=cfg.telegram_proxy_ca, api_base=cfg.telegram_api_base))
+                                   proxy_ca=cfg.telegram_proxy_ca, api_base=cfg.telegram_api_base,
+                                   batch_sec=cfg.telegram_batch_sec, max_lines=cfg.telegram_max_lines))
     if cfg.webhook_url:
         ns.append(WebhookNotifier(cfg.webhook_url))
     return MultiNotifier(ns)

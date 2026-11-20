@@ -38,7 +38,7 @@ def format_alert(a: Alert, markup: bool = False) -> str:
 MARKET_TAG = {"ofz": "ОФЗ", "corp_bonds": "обл.", "futures": "фьюч.", "etf": "БПИФ"}
 # порядок причин в строке: день → короткое окно
 DAY_KINDS = {"STRONG_DAY", "ANOMALY_DAY"}
-KIND_ORDER = ["STRONG_DAY", "ANOMALY_DAY", "FAST_MOVE", "ANOMALY_FAST"]
+KIND_ORDER = ["STRONG_DAY", "ANOMALY_DAY", "FAST_MOVE"]
 
 
 def merge_alerts(old: Alert, new: Alert) -> Alert:
@@ -241,18 +241,14 @@ class TelegramNotifier:
     def __init__(self, token: str, channel: str, proxy: str | None = None,
                  proxy_user: str | None = None, proxy_password: str | None = None,
                  api_base: str = "https://api.telegram.org", session: requests.Session | None = None,
-                 retries: int = 3, proxy_ca: str | None = None, batch_sec: float = 60.0,
-                 max_lines: int = 30, clock=time.monotonic) -> None:
+                 retries: int = 3, proxy_ca: str | None = None, max_lines: int = 30) -> None:
         self.api = f"{api_base.rstrip('/')}/bot{token}"
         self.url = f"{self.api}/sendMessage"
         self.chat_id = normalize_channel(channel)
-        # Сигналы копятся batch_sec секунд и уходят одним сообщением
-        self.batch_sec = batch_sec
+        # Сигналы одной проверки копятся и уходят одним сообщением при flush()
         self.max_lines = max_lines
-        self._clock = clock
         self._pending: dict[tuple[str, str], Alert] = {}
         self._digest: str | None = None
-        self._since: float | None = None
         self.retries = retries
         self.session = session or requests.Session()
         self.proxy_display = None
@@ -390,41 +386,28 @@ class TelegramNotifier:
                 log.error("Telegram: бот %s в канале «%s» имеет статус «%s» без права публикации — "
                           "сделайте его администратором с правом «Публикация сообщений»", bot, title, status)
                 return False
-        log.info("Telegram: бот %s, канал «%s» (%s, id %s), статус бота: %s, прокси: %s, окно склейки %g с",
-                 bot, title, ctype, chat.get("id"), status, self.proxy_display or "нет", self.batch_sec)
+        log.info("Telegram: бот %s, канал «%s» (%s, id %s), статус бота: %s, прокси: %s",
+                 bot, title, ctype, chat.get("id"), status, self.proxy_display or "нет")
         return True
 
     def send_alerts(self, alerts: list[Alert]) -> None:
         for a in alerts:
             old = self._pending.get(a.quote.key)
             self._pending[a.quote.key] = merge_alerts(old, a) if old else a
-        if alerts and self._since is None:
-            self._since = self._clock()
-        if alerts:
-            log.info("Telegram: в очереди %d инструм., отправка не позже чем через %.0f с", len(self._pending),
-                     max(0.0, self.batch_sec - (self._clock() - self._since)))
-        self.flush()
 
     def send_text(self, text: str) -> None:
-        """Сводка уходит в том же сообщении, что и накопленные сигналы."""
+        """Сводка уходит в том же сообщении, что и сигналы проверки."""
         self._digest = text
-        if self._since is None:
-            self._since = self._clock()
-        self.flush()
 
     @property
     def pending(self) -> int:
         return len(self._pending)
 
     def flush(self, force: bool = False) -> None:
-        if self._since is None:
-            return
-        if not force and self._clock() - self._since < self.batch_sec:
-            return
         alerts, digest = list(self._pending.values()), self._digest
-        self._pending, self._digest, self._since = {}, None, None
+        self._pending, self._digest = {}, None
         if alerts or digest:
-            log.info("Telegram: отправляю пачку — сигналов %d%s", len(alerts), ", со сводкой" if digest else "")
+            log.info("Telegram: отправляю сообщение — сигналов %d%s", len(alerts), ", со сводкой" if digest else "")
             self._post(format_batch(alerts, digest, max_lines=self.max_lines))
 
     def send_status(self, text: str) -> None:

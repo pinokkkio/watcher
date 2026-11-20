@@ -12,40 +12,23 @@ from .markets import DEFAULT_MARKETS, MarketSpec
 
 @dataclass
 class Thresholds:
-    # «Сильное движение» — абсолютные пороги в %
+    fast_window_min: float = 15.0  # окно движения, минут
+    fast_move_pct: float = 2.0  # движение внутри окна (от мин./макс. до цены), %
+    # Дневные сигналы (по умолчанию выключены)
     day_levels: list[float] = field(default_factory=lambda: [3.0, 5.0, 7.0, 10.0, 15.0])
-    fast_window_min: float = 15.0  # окно текущего движения, минут
-    fast_move_pct: float = 2.0  # движение от мин./макс. за окно до текущей цены, %
-    # «Аномалия» — относительно собственной волатильности и оборота инструмента
     z_day: float = 3.0  # дневное изменение в сигмах дневной волатильности
-    z_fast: float = 4.0  # изменение за окно в сигмах (σ_дня · √(окно/сессия))
     z_step: float = 1.0  # повторный алерт при росте z на столько сигм
-    cooldown_min: float = 15.0  # пауза между сигналами по бумаге в одну сторону
-    # Длина торговой сессии (МСК) — для пересчёта дневной σ в σ за окно
-    session_start: str = "10:00"
-    session_end: str = "23:50"
-
-    @property
-    def session_minutes(self) -> float:
-        h1, m1 = map(int, self.session_start.split(":"))
-        h2, m2 = map(int, self.session_end.split(":"))
-        return max(60.0, (h2 * 60 + m2) - (h1 * 60 + m1))
 
 
 DEFAULT_THRESHOLDS: dict[str, Thresholds] = {
     "shares": Thresholds(),
-    "bonds": Thresholds(
-        day_levels=[1.0, 2.0, 3.0, 5.0, 10.0], fast_move_pct=2.0, z_day=3.5, z_fast=5.0,
-        session_end="18:50",
-    ),
-    "futures": Thresholds(
-        day_levels=[2.0, 4.0, 6.0, 10.0], fast_move_pct=3.0, session_start="09:00",
-    ),
+    "bonds": Thresholds(fast_move_pct=2.0, day_levels=[1.0, 2.0, 3.0, 5.0, 10.0], z_day=3.5),
+    "futures": Thresholds(fast_move_pct=3.0, day_levels=[2.0, 4.0, 6.0, 10.0]),
 }
 
 
-ALL_SIGNALS = ("STRONG_DAY", "ANOMALY_DAY", "FAST_MOVE", "ANOMALY_FAST")
-# Пока — только сильные движения за окно (порог в %); остальное включается через signals / WATCH_SIGNALS
+ALL_SIGNALS = ("FAST_MOVE", "STRONG_DAY", "ANOMALY_DAY")
+# Пока — только сильные движения за 15 минут; дневные включаются через signals / WATCH_SIGNALS
 DEFAULT_SIGNALS = frozenset({"FAST_MOVE"})
 
 
@@ -64,7 +47,8 @@ class Config:
         DEFAULT_MARKETS[k] for k in ("shares", "ofz", "corp_bonds", "futures")])
     thresholds: dict[str, Thresholds] = field(default_factory=lambda: {
         k: dataclasses.replace(v) for k, v in DEFAULT_THRESHOLDS.items()})
-    poll_interval_sec: float = 30.0
+    poll_interval_sec: float = 900.0  # проверка раз в 15 минут (данные ISS и так с задержкой)
+    max_candidates: int = 300  # максимум бумаг на рынок, по которым запрашиваются минутные свечи
     history_days: int = 60
     db_path: str = "data/history.sqlite"
     alerts_log: str | None = "data/alerts.jsonl"
@@ -79,7 +63,6 @@ class Config:
     telegram_proxy_password: str | None = None
     telegram_proxy_ca: str | None = None  # PEM-сертификат https-прокси, если он самоподписанный
     telegram_api_base: str = "https://api.telegram.org"
-    telegram_batch_sec: float = 60.0  # копить сигналы и слать одним сообщением раз в N секунд
     telegram_max_lines: int = 30  # максимум строк-инструментов в одном сообщении
     webhook_url: str | None = None
     iss_login: str | None = None
@@ -118,8 +101,8 @@ def _apply_env(cfg: Config) -> None:
         v = os.environ.get(env)
         if v:
             setattr(cfg, attr, v)
-    for env, attr, typ in (("TELEGRAM_BATCH_SEC", "telegram_batch_sec", float),
-                           ("TELEGRAM_MAX_LINES", "telegram_max_lines", int)):
+    for env, attr, typ in (("TELEGRAM_MAX_LINES", "telegram_max_lines", int),
+                           ("POLL_INTERVAL_SEC", "poll_interval_sec", float)):
         if os.environ.get(env):
             setattr(cfg, attr, typ(os.environ[env]))
     if os.environ.get("WATCH_SIGNALS"):
@@ -139,7 +122,7 @@ def _apply_file(cfg: Config, path: str | Path) -> None:
         raw: dict[str, Any] = tomllib.load(f)
 
     general = raw.get("general", {})
-    for k in ("poll_interval_sec", "history_days", "db_path", "alerts_log", "digest_interval_min",
+    for k in ("poll_interval_sec", "max_candidates", "history_days", "db_path", "alerts_log", "digest_interval_min",
               "digest_top", "console"):
         if k in general:
             setattr(cfg, k, general[k])
@@ -173,8 +156,6 @@ def _apply_file(cfg: Config, path: str | Path) -> None:
     cfg.telegram_proxy_password = tg.get("proxy_password") or None
     cfg.telegram_proxy_ca = tg.get("proxy_ca") or None
     cfg.telegram_api_base = tg.get("api_base") or cfg.telegram_api_base
-    if "batch_sec" in tg:
-        cfg.telegram_batch_sec = float(tg["batch_sec"])
     if "max_lines" in tg:
         cfg.telegram_max_lines = int(tg["max_lines"])
     cfg.webhook_url = raw.get("webhook", {}).get("url") or None

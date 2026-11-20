@@ -1,4 +1,4 @@
-"""Главный цикл: опрос рынков, детекция, уведомления, периодическая сводка."""
+"""Главный цикл: проверка рынков раз в poll_interval, детекция, одно сообщение на проверку."""
 from __future__ import annotations
 
 import logging
@@ -10,8 +10,9 @@ from .config import Config
 from .detectors import MSK, Detector
 from .history import HistoryStore
 from .markets import MarketSpec
-from .models import Alert, Baseline, Quote
+from .models import Alert, Baseline, Candle, Quote
 from .notifiers import Notifier
+from .scanner import MoveScanner
 from .volatility import format_digest, rank_intraday
 
 log = logging.getLogger(__name__)
@@ -20,6 +21,7 @@ log = logging.getLogger(__name__)
 class MarketSource(Protocol):
     def snapshot(self, spec: MarketSpec) -> list[Quote]: ...
     def history_day(self, spec: MarketSpec, day: date): ...
+    def candles(self, spec: MarketSpec, secid: str, start: datetime) -> list[Candle]: ...
 
 
 class Watcher:
@@ -29,6 +31,7 @@ class Watcher:
         self.store = store
         self.notifier = notifier
         self.detector = Detector(cfg)
+        self.scanner = MoveScanner(cfg, source)
         self.baselines: dict[str, dict[str, Baseline]] = {}
         self.quotes: dict[str, list[Quote]] = {}
         self._baseline_day: date | None = None
@@ -38,6 +41,8 @@ class Watcher:
         today = datetime.now(MSK).date()
         if not force and self._baseline_day == today:
             return
+        if not (self.cfg.signals & {"STRONG_DAY", "ANOMALY_DAY"}):
+            return  # дневная статистика нужна только дневным сигналам
         for spec in self.cfg.markets:
             self.store.ensure(spec, self.source, self.cfg.history_days, today=today)
             self.baselines[spec.board] = self.store.baselines(spec.board, self.cfg.history_days)
@@ -53,7 +58,11 @@ class Watcher:
                 log.warning("Снимок %s не получен: %s", spec.board, e)
                 continue
             self.quotes[spec.key] = quotes
-            alerts.extend(self.detector.process(quotes, self.baselines, now=now))
+            if "FAST_MOVE" in self.cfg.signals:
+                alerts.extend(self.scanner.scan(spec, quotes, now=now))
+            if self.cfg.signals & {"STRONG_DAY", "ANOMALY_DAY"}:
+                alerts.extend(self.detector.process(quotes, self.baselines, now=now))
+        log.info("Проверка завершена: сигналов %d", len(alerts))
         if alerts:
             self.notifier.send_alerts(alerts)
         return alerts
@@ -86,7 +95,7 @@ class Watcher:
                     text = self.digest()
                     if text:
                         self.notifier.send_text(text)
-                self.notifier.flush()
+                self.notifier.flush()  # одно сообщение на проверку
             except Exception:  # noqa: BLE001
                 log.exception("Ошибка в цикле опроса")
             if once:

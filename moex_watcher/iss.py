@@ -9,7 +9,7 @@ from typing import Any, Iterable
 import requests
 
 from .markets import MarketSpec
-from .models import Quote
+from .models import Candle, Quote
 
 log = logging.getLogger(__name__)
 
@@ -119,6 +119,21 @@ class IssClient:
         payload = self.get(path, {"iss.only": "securities,marketdata"})
         return parse_snapshot(spec, payload, ts=datetime.now().astimezone())
 
+    def candles(self, spec: MarketSpec, secid: str, start: datetime) -> list[Candle]:
+        """Минутные свечи инструмента начиная с start (время МСК, naive). С пагинацией по 500."""
+        path = f"/engines/{spec.engine}/markets/{spec.market}/boards/{spec.board}/securities/{secid}/candles.json"
+        res: list[Candle] = []
+        offset = 0
+        while True:
+            payload = self.get(path, {"from": start.strftime("%Y-%m-%d %H:%M:%S"), "interval": 1, "start": offset,
+                                      "iss.only": "candles"})
+            n = len(table(payload, "candles"))
+            res.extend(parse_candles(payload))
+            if n < 500:
+                break
+            offset += n
+        return [c for c in res if c.begin >= start]
+
     def history_day(self, spec: MarketSpec, day: date) -> list[dict[str, Any]]:
         """Итоги торгов по всем инструментам режима за один день (с пагинацией)."""
         path = f"/history/engines/{spec.engine}/markets/{spec.market}/boards/{spec.board}/securities.json"
@@ -141,3 +156,20 @@ class IssClient:
             if not page:
                 break
         return rows
+
+
+def _ts(v: Any) -> datetime | None:
+    try:
+        return datetime.strptime(str(v), "%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_candles(payload: dict[str, Any]) -> list[Candle]:
+    out = []
+    for r in table(payload, "candles"):
+        begin, end = _ts(r.get("begin")), _ts(r.get("end"))
+        hi, lo, close = _num(r.get("high")), _num(r.get("low")), _num(r.get("close"))
+        if begin and end and hi and lo and close and lo > 0:
+            out.append(Candle(begin, end, hi, lo, close))
+    return out

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import signal
 import sys
 
 from datetime import datetime
@@ -37,7 +38,7 @@ def build_notifier(cfg: Config) -> MultiNotifier:
                                    proxy_user=cfg.telegram_proxy_user,
                                    proxy_password=cfg.telegram_proxy_password,
                                    proxy_ca=cfg.telegram_proxy_ca, api_base=cfg.telegram_api_base,
-                                   batch_sec=cfg.telegram_batch_sec, max_lines=cfg.telegram_max_lines))
+                                   max_lines=cfg.telegram_max_lines))
     if cfg.webhook_url:
         ns.append(WebhookNotifier(cfg.webhook_url))
     return MultiNotifier(ns)
@@ -50,7 +51,7 @@ def startup_message(cfg: Config) -> str:
     return (f"🟢 moex-watcher {__version__} запущен — {now} МСК\n\n"
             f"Слежу за рынками:\n{markets}\n\n"
             f"Сигналы:\n{signals_description(cfg)}\n\n"
-            f"Опрос каждые {cfg.poll_interval_sec:g} с, данные MOEX ISS {delay}.")
+            f"Проверка сразу и далее каждые {cfg.poll_interval_sec / 60:g} мин, данные MOEX ISS {delay}.")
 
 
 def signals_description(cfg: Config) -> str:
@@ -60,9 +61,7 @@ def signals_description(cfg: Config) -> str:
     if "FAST_MOVE" in cfg.signals:
         win = cfg.th(classes[0]).fast_window_min if classes else 15
         parts = ", ".join(f"{label[c]} ≥{cfg.th(c).fast_move_pct:g}%" for c in classes)
-        lines.append(f"• движение за последние {win:g} мин: {parts}")
-    if "ANOMALY_FAST" in cfg.signals:
-        lines.append(f"• необычное для бумаги движение за то же окно: ≥{cfg.th('shares').z_fast:g}σ")
+        lines.append(f"• сильное движение внутри {win:g} минут: {parts}")
     day = {"STRONG_DAY": "сильное движение за день", "ANOMALY_DAY": "аномалия за день (σ)"}
     lines += [f"• {t}" for k, t in day.items() if k in cfg.signals]
     return "\n".join(lines) or "• нет (все сигналы выключены)"
@@ -146,6 +145,8 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    # в контейнере процесс — PID 1: без обработчика SIGTERM docker stop ждёт 10 с и убивает
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     cfg = load_config(args.config or os.environ.get("MOEX_WATCHER_CONFIG") or None)
     _select_markets(cfg, args.markets)
     try:

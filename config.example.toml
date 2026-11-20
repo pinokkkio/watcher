@@ -3,12 +3,13 @@
 [general]
 # Рынки: shares (TQBR), etf (TQTF), ofz (TQOB), corp_bonds (TQCB), futures (RFUD)
 watch = ["shares", "ofz", "corp_bonds", "futures"]
-poll_interval_sec = 30        # период опроса
-history_days = 60             # глубина истории для σ и среднего оборота, торговых дней
+poll_interval_sec = 900       # проверка сразу и далее раз в 15 минут
+max_candidates = 300          # максимум бумаг на рынок, по которым грузятся минутные свечи
+history_days = 60             # глубина истории для дневных сигналов, торговых дней
 db_path = "data/history.sqlite"
 alerts_log = "data/alerts.jsonl"   # "" — не писать журнал
-# Какие сигналы слать. Сейчас — только текущие движения за окно (fast_window_min).
-# Доступны: FAST_MOVE, ANOMALY_FAST (за окно), STRONG_DAY, ANOMALY_DAY (за день)
+# Какие сигналы слать. Сейчас — только сильные движения внутри окна (fast_window_min).
+# Доступны: FAST_MOVE (за окно), STRONG_DAY, ANOMALY_DAY (за день)
 signals = ["FAST_MOVE"]
 digest_interval_min = 0       # сводка «самые волатильные сегодня» раз в N минут; 0 — выключена
 digest_top = 10
@@ -17,20 +18,18 @@ console = true
 # Пороги по классам активов: shares / bonds / futures.
 # Указывайте только то, что хотите поменять.
 [thresholds.shares]
-day_levels = [3, 5, 7, 10, 15]   # % к закрытию прошлого дня — «сильное движение»
-fast_window_min = 15             # окно текущего движения, мин
-fast_move_pct = 2.0              # % от мин./макс. за окно до текущей цены
-z_day = 3.0                      # аномалия: дневное изменение в σ
-z_fast = 4.0                     # аномалия: движение за окно в σ (σ дня, приведённая к окну)
-cooldown_min = 15                # пауза по бумаге в ту же сторону (разворот и удвоение — сразу)
+fast_window_min = 15             # окно движения, мин
+fast_move_pct = 2.0              # движение внутри окна (от мин./макс. до цены), %
+day_levels = [3, 5, 7, 10, 15]   # для STRONG_DAY: % к закрытию прошлого дня
+z_day = 3.0                      # для ANOMALY_DAY: дневное изменение в σ
 
 [thresholds.bonds]
-day_levels = [1, 2, 3, 5, 10]
 fast_move_pct = 2.0
+day_levels = [1, 2, 3, 5, 10]
 
 [thresholds.futures]
-day_levels = [2, 4, 6, 10]
 fast_move_pct = 3.0
+day_levels = [2, 4, 6, 10]
 
 # Свой режим торгов, например фьючерсы на юань отдельно не нужны,
 # а вот акции в режиме T+ USD или другие доски — так:
@@ -51,7 +50,6 @@ fast_move_pct = 3.0
 # proxy_user = "user"
 # proxy_password = "secret"                  # спецсимволы экранировать не нужно
 # proxy_ca = "certs/proxy-ca.pem"            # если сертификат прокси самоподписанный
-batch_sec = 60    # копить сигналы и отправлять одним сообщением раз в N секунд
 max_lines = 30    # максимум инструментов в сообщении, остальные — «…и ещё N»
 
 [webhook]

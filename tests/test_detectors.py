@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 
-from moex_watcher.config import ALL_SIGNALS, Config, Thresholds
+from moex_watcher.config import ALL_SIGNALS, Config
 from moex_watcher.detectors import MSK, Detector
 from moex_watcher.models import Baseline, Quote
 
@@ -49,108 +49,11 @@ def test_anomaly_day_relative_to_own_volatility():
         ["ANOMALY_DAY", "STRONG_DAY"]
 
 
-def feed(d, b, prices, t, step=timedelta(seconds=30)):
-    """Подаёт цены по одной каждые 30 сек, возвращает (все алерты, время после последней)."""
-    out = []
-    for p in prices:
-        out += d.process([q(p)], b, t)
-        t += step
-    return out, t
-
-
-def test_defaults_only_current_moves():
+def test_day_signals_off_by_default():
     d = Detector(Config())
     b = base(sigma=0.005, avg_value=1e9)
     # +6% за день, 12σ — но это дневные сигналы, по умолчанию выключены
     assert d.process([q(106, value=1e9)], b, T0) == []
-
-
-def test_sigma_spikes_off_by_default():
-    d = Detector(Config())
-    b = base(sigma=0.002)  # очень тихая бумага: +0.3% за минуту — это >10σ, но ниже порога 2%
-    d.process([q(100)], b, T0)
-    assert d.process([q(100.3)], b, T0 + timedelta(minutes=1)) == []
-
-
-def test_no_liquidity_filter():
-    d = Detector(Config())
-    # оборот почти нулевой — всё равно сообщаем о движении
-    d.process([q(100, value=0)], {}, T0)
-    al = d.process([q(103, value=0)], {}, T0 + timedelta(minutes=1))
-    assert kinds(al) == ["FAST_MOVE"]
-
-
-def test_bond_and_futures_thresholds():
-    d = Detector(Config())
-    bq = lambda p: q(p, secid="OFZ", cls="bonds", board="TQOB")
-    fq = lambda p: q(p, secid="SiZ6", cls="futures", board="RFUD")
-    d.process([bq(100), fq(100)], {}, T0)
-    assert d.process([bq(101.9), fq(102.9)], {}, T0 + timedelta(minutes=1)) == []
-    al = d.process([bq(102.1), fq(103.1)], {}, T0 + timedelta(minutes=2))
-    assert sorted(a.quote.secid for a in al) == ["OFZ", "SiZ6"]
-
-
-def test_move_within_15_min_window():
-    d = Detector(Config())
-    b = {}  # без истории — проверяем только порог в %
-    al, t = feed(d, b, [100.0] * 20, T0)
-    assert al == []
-    al, t = feed(d, b, [100.5, 101.0, 101.5, 102.1], t)  # +2.1% за 2 мин
-    assert kinds(al) == ["FAST_MOVE"]
-    assert "+2.1% за 2 мин" in al[0].reasons[0].short
-
-
-def test_slow_drift_outside_window_ignored():
-    d = Detector(Config())
-    b = {}  # без истории — проверяем только порог в %
-    # +3% за 60 минут равномерно: в любом 15-минутном окне меньше 1%
-    prices = [100 * (1 + 0.03 * i / 120) for i in range(121)]
-    al, _ = feed(d, b, prices, T0)
-    assert al == []
-
-
-def test_reversal_inside_window_is_caught():
-    d = Detector(Config())
-    b = {}  # без истории — проверяем только порог в %
-    # просели на 1.5% (ниже порога) и отросли: от начала окна +0.6%, но от минимума +2.1%
-    al, t = feed(d, b, [100, 99, 98.5, 99.5, 100.6], T0)
-    assert kinds(al) == ["FAST_MOVE"]
-    assert al[0].reasons[0].short.startswith("+2.1%")
-
-
-def test_opposite_direction_not_muted_by_cooldown():
-    d = Detector(Config())
-    b = {}
-    al, t = feed(d, b, [100, 97.9], T0)  # -2.1%
-    assert al and al[0].reasons[0].short.startswith("-2.1%")
-    al, t = feed(d, b, [99.0, 100.0], t)  # отскок +2.1% от минимума — сообщаем, хотя пауза
-    assert al and al[0].reasons[0].short.startswith("+2.1%")
-
-
-def test_cooldown_and_escalation():
-    d = Detector(Config())
-    b = {}  # без истории — проверяем только порог в %
-    al, t = feed(d, b, [100, 102.2], T0)
-    assert kinds(al) == ["FAST_MOVE"]
-    al, t = feed(d, b, [102.5, 103.0], t)  # продолжение в паузе — тихо
-    assert al == []
-    al, t = feed(d, b, [104.5], t)  # движение удвоилось (+4.5%) — сообщаем сразу
-    assert kinds(al) == ["FAST_MOVE"]
-    al, t = feed(d, b, [104.5] * 40, t)  # 20 мин стоит на месте
-    assert al == []
-    al, t = feed(d, b, [102.3], t)  # новое движение вниз после паузы
-    assert kinds(al) == ["FAST_MOVE"] and al[0].reasons[0].short.startswith("-2.1%")
-
-
-def test_anomaly_fast_for_quiet_instrument():
-    d = Detector(all_cfg())
-    b = base(sigma=0.004)  # очень спокойная бумага
-    t = T0
-    for _ in range(10):
-        d.process([q(100.0)], b, t)
-        t += timedelta(seconds=30)
-    al = d.process([q(100.6)], b, t)  # +0.6% за 5 мин: ниже 1.5%, но ≫ σ окна
-    assert "ANOMALY_FAST" in kinds(al) and "FAST_MOVE" not in kinds(al)
 
 
 def test_state_resets_next_day():

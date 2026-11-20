@@ -48,6 +48,17 @@ class Quote:
 
 
 @dataclass(slots=True)
+class Candle:
+    """Минутная свеча; время — МСК без таймзоны, как в ISS."""
+
+    begin: datetime
+    end: datetime
+    high: float
+    low: float
+    close: float
+
+
+@dataclass(slots=True)
 class Baseline:
     """Статистика инструмента по дневной истории."""
 
@@ -64,7 +75,7 @@ class Baseline:
 
 @dataclass(slots=True)
 class Reason:
-    kind: str  # STRONG_DAY | ANOMALY_DAY | FAST_MOVE | ANOMALY_FAST
+    kind: str  # FAST_MOVE | STRONG_DAY | ANOMALY_DAY
     text: str
     anomaly: bool  # True — аномалия (относительно собственной волатильности/объёма)
     short: str = ""  # краткая форма для сводного сообщения

@@ -42,8 +42,15 @@ fast_move_pct = 1.0
 # title = "Мои акции"
 
 [telegram]
+# Секреты удобнее задавать через переменные окружения (.env):
+# TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_PROXY, TELEGRAM_PROXY_USER, TELEGRAM_PROXY_PASSWORD
 # token = "123456:ABC..."   # бот от @BotFather
 # chat_id = "123456789"     # ваш chat_id или id канала
+# Прокси используется только для запросов к Telegram (к бирже — напрямую).
+# proxy = "https://proxy.example.com:3128"   # https:// — TLS до прокси, http:// — CONNECT
+# proxy_user = "user"
+# proxy_password = "secret"                  # спецсимволы экранировать не нужно
+# proxy_ca = "certs/proxy-ca.pem"            # если сертификат прокси самоподписанный
 
 [webhook]
 # url = "https://example.com/hook"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import os
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -62,6 +63,11 @@ class Config:
     console: bool = True
     telegram_token: str | None = None
     telegram_chat_id: str | None = None
+    telegram_proxy: str | None = None  # http(s)://host:port — только для запросов к Telegram
+    telegram_proxy_user: str | None = None
+    telegram_proxy_password: str | None = None
+    telegram_proxy_ca: str | None = None  # PEM-сертификат https-прокси, если он самоподписанный
+    telegram_api_base: str = "https://api.telegram.org"
     webhook_url: str | None = None
     iss_login: str | None = None
     iss_password: str | None = None
@@ -72,8 +78,41 @@ class Config:
 
 def load_config(path: str | Path | None) -> Config:
     cfg = Config()
-    if not path:
-        return cfg
+    if path:
+        _apply_file(cfg, path)
+    _apply_env(cfg)
+    return cfg
+
+
+# Переменные окружения перекрывают файл — удобно для секретов в Docker.
+ENV_MAP = {
+    "TELEGRAM_TOKEN": "telegram_token",
+    "TELEGRAM_CHAT_ID": "telegram_chat_id",
+    "TELEGRAM_PROXY": "telegram_proxy",
+    "TELEGRAM_PROXY_USER": "telegram_proxy_user",
+    "TELEGRAM_PROXY_PASSWORD": "telegram_proxy_password",
+    "TELEGRAM_PROXY_CA": "telegram_proxy_ca",
+    "TELEGRAM_API_BASE": "telegram_api_base",
+    "ISS_LOGIN": "iss_login",
+    "ISS_PASSWORD": "iss_password",
+    "WEBHOOK_URL": "webhook_url",
+}
+
+
+def _apply_env(cfg: Config) -> None:
+    for env, attr in ENV_MAP.items():
+        v = os.environ.get(env)
+        if v:
+            setattr(cfg, attr, v)
+    if os.environ.get("WATCH_MARKETS"):
+        keys = [k.strip() for k in os.environ["WATCH_MARKETS"].split(",") if k.strip()]
+        bad = [k for k in keys if k not in DEFAULT_MARKETS]
+        if bad:
+            raise ValueError(f"WATCH_MARKETS: неизвестные рынки {bad}")
+        cfg.markets = [DEFAULT_MARKETS[k] for k in keys]
+
+
+def _apply_file(cfg: Config, path: str | Path) -> None:
     with open(path, "rb") as f:
         raw: dict[str, Any] = tomllib.load(f)
 
@@ -104,8 +143,12 @@ def load_config(path: str | Path | None) -> Config:
     tg = raw.get("telegram", {})
     cfg.telegram_token = tg.get("token") or None
     cfg.telegram_chat_id = str(tg["chat_id"]) if tg.get("chat_id") else None
+    cfg.telegram_proxy = tg.get("proxy") or None
+    cfg.telegram_proxy_user = tg.get("proxy_user") or None
+    cfg.telegram_proxy_password = tg.get("proxy_password") or None
+    cfg.telegram_proxy_ca = tg.get("proxy_ca") or None
+    cfg.telegram_api_base = tg.get("api_base") or cfg.telegram_api_base
     cfg.webhook_url = raw.get("webhook", {}).get("url") or None
     iss = raw.get("iss", {})
     cfg.iss_login = iss.get("login") or None
     cfg.iss_password = iss.get("password") or None
-    return cfg

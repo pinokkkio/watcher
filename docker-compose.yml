@@ -1,0 +1,22 @@
+services:
+  watcher:
+    build: .
+    image: moex-watcher:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      MOEX_WATCHER_CONFIG: /app/config.toml
+    volumes:
+      - watcher-data:/app/data   # кэш истории и журнал алертов
+      - ./config.toml:/app/config.toml:ro
+      # если у https-прокси самоподписанный сертификат: положите его в ./certs/proxy-ca.pem
+      # и задайте в .env TELEGRAM_PROXY_CA=/app/certs/proxy-ca.pem
+      # - ./certs:/app/certs:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  watcher-data:

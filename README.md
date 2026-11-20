@@ -25,7 +25,66 @@
 (`min_value_today`, `min_avg_value`). Если по инструменту несколько сигналов за один опрос,
 они приходят одним уведомлением.
 
-## Установка
+## Запуск в Docker
+
+```bash
+cp .env.example .env
+```
+
+```bash
+cp config.example.toml config.toml
+```
+
+В `.env` укажите `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID` и параметры прокси, затем проверьте отправку:
+
+```bash
+docker compose run --rm watcher watch --test-notify
+```
+
+Запуск в фоне и просмотр логов:
+
+```bash
+docker compose up -d --build
+```
+
+```bash
+docker compose logs -f
+```
+
+Самые волатильные инструменты из контейнера:
+
+```bash
+docker compose run --rm watcher -m shares volatile --mode z
+```
+
+История и журнал алертов хранятся в volume `watcher-data`. Журнал можно посмотреть так:
+`docker compose exec watcher tail -f /app/data/alerts.jsonl`. Контейнер работает от непривилегированного
+пользователя, часовой пояс — Europe/Moscow.
+
+## Telegram через прокси
+
+Все запросы к `api.telegram.org` идут через прокси с логином и паролем, запросы к бирже — напрямую.
+Переменные окружения перекрывают `config.toml`:
+
+| Переменная | Пример | Описание |
+|---|---|---|
+| `TELEGRAM_TOKEN` | `123456:ABC…` | токен бота от @BotFather |
+| `TELEGRAM_CHAT_ID` | `123456789`, `-100…` | личный чат, группа или канал (бот должен быть добавлен) |
+| `TELEGRAM_PROXY` | `https://proxy.example.com:3128` | `https://` — TLS-соединение до прокси, `http://` — обычный CONNECT-прокси |
+| `TELEGRAM_PROXY_USER` | `user` | логин прокси |
+| `TELEGRAM_PROXY_PASSWORD` | `p@ss:w/rd` | пароль; спецсимволы экранируются автоматически |
+| `TELEGRAM_PROXY_CA` | `/app/certs/proxy-ca.pem` | CA самоподписанного https-прокси, если нужно |
+
+Соединение с Telegram всегда идёт по HTTPS через туннель: сам прокси трафик не видит.
+Сертификат https-прокси проверяется, и пока ему нет доверия, логин и пароль прокси не отправляются.
+Пароль в логах маскируется. Переменные `HTTP(S)_PROXY` окружения на Telegram не влияют.
+Если отправить не удалось, есть повторы с паузой, а при 429 учитывается `retry_after`.
+Ошибка авторизации на прокси (407) пишется в лог отдельно.
+
+Прочие переменные: `WATCH_MARKETS=shares,futures`, `ISS_LOGIN`/`ISS_PASSWORD`, `WEBHOOK_URL`,
+`MOEX_WATCHER_CONFIG` (путь к конфигу).
+
+## Установка без Docker
 
 ```bash
 pip install -e .

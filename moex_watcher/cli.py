@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 
 from .config import Config, load_config
@@ -20,7 +21,10 @@ def build_notifier(cfg: Config) -> MultiNotifier:
     if cfg.alerts_log:
         ns.append(JsonlNotifier(cfg.alerts_log))
     if cfg.telegram_token and cfg.telegram_chat_id:
-        ns.append(TelegramNotifier(cfg.telegram_token, cfg.telegram_chat_id))
+        ns.append(TelegramNotifier(cfg.telegram_token, cfg.telegram_chat_id, proxy=cfg.telegram_proxy,
+                                   proxy_user=cfg.telegram_proxy_user,
+                                   proxy_password=cfg.telegram_proxy_password,
+                                   proxy_ca=cfg.telegram_proxy_ca, api_base=cfg.telegram_api_base))
     if cfg.webhook_url:
         ns.append(WebhookNotifier(cfg.webhook_url))
     return MultiNotifier(ns)
@@ -37,12 +41,17 @@ def _select_markets(cfg: Config, markets: str | None) -> None:
 
 
 def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
-    client = IssClient(login=cfg.iss_login, password=cfg.iss_password)
     notifier = build_notifier(cfg)
-    w = Watcher(cfg, client, HistoryStore(cfg.db_path), notifier)
     if args.test_notify:
-        notifier.send_text("moex-watcher: проверка канала уведомлений ✅")
-        return 0
+        tg = next((n for n in notifier.notifiers if isinstance(n, TelegramNotifier)), None)
+        if tg is None:
+            print("Telegram не настроен: задайте TELEGRAM_TOKEN и TELEGRAM_CHAT_ID")
+            return 1
+        ok = tg.check("moex-watcher: проверка канала уведомлений ✅")
+        print("Telegram: сообщение отправлено" if ok else "Telegram: отправить не удалось, см. лог")
+        return 0 if ok else 1
+    client = IssClient(login=cfg.iss_login, password=cfg.iss_password)
+    w = Watcher(cfg, client, HistoryStore(cfg.db_path), notifier)
     logging.getLogger(__name__).info("Отслеживаю: %s", ", ".join(m.board for m in cfg.markets))
     w.run(once=args.once)
     return 0
@@ -96,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    cfg = load_config(args.config)
+    cfg = load_config(args.config or os.environ.get("MOEX_WATCHER_CONFIG") or None)
     _select_markets(cfg, args.markets)
     try:
         return args.func(args, cfg)

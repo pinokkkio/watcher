@@ -11,6 +11,21 @@ from moex_watcher.notifiers import TelegramNotifier, build_proxy_url, mask_proxy
 USER, PASSWORD = "bot user", "p@ss:w/rd#1"
 
 
+CHAT = {"id": -1001234567890, "type": "channel", "title": "MOEX alerts", "username": "moex_alerts"}
+MEMBER = {"status": "administrator", "can_post_messages": True}
+
+
+def fake_bot_api(path, body):
+    method = path.rsplit("/", 1)[-1]
+    if method == "getMe":
+        return {"id": 777, "is_bot": True, "username": "moex_watch_bot"}
+    if method == "getChat":
+        return dict(CHAT)
+    if method == "getChatMember":
+        return dict(MEMBER)
+    return {"message_id": 1, "chat": dict(CHAT)}
+
+
 class ProxyHandler(BaseHTTPRequestHandler):
     """Мини-прокси с Basic-авторизацией, отвечающий вместо Telegram."""
 
@@ -32,7 +47,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
-        out = json.dumps({"ok": True}).encode()
+        out = json.dumps({"ok": True, "result": fake_bot_api(self.path, body)}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(out)))
@@ -203,9 +218,53 @@ def test_startup_message_published(proxy, monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "HistoryStore", lambda path: None)
 
     assert cli.main(["watch"]) == 0
-    posted = [json.loads(b) for m, _, _, b in ProxyHandler.seen if m == "POST"]
+    calls = [p.rsplit("/", 1)[-1] for m, p, _, _ in ProxyHandler.seen]
+    assert calls == ["getMe", "getChat", "getChatMember", "sendMessage"]
+    posted = [json.loads(b) for m, p, _, b in ProxyHandler.seen if p.endswith("/sendMessage")]
     assert len(posted) == 1
     msg = posted[0]
     assert msg["chat_id"] == "@moex_alerts"
     assert "запущен" in msg["text"] and "Акции (Т+) (TQBR)" in msg["text"] and "RFUD" in msg["text"]
     assert "Корп. облигации" not in msg["text"]
+
+
+def _tg(proxy, **kw):
+    host, port = proxy.server_address
+    return TelegramNotifier("1:T", kw.pop("channel", "@moex_alerts"), proxy=f"http://{host}:{port}",
+                            proxy_user=USER, proxy_password=PASSWORD, api_base="http://api.telegram.test", **kw)
+
+
+def test_verify_ok_and_publish_logged(proxy, caplog):
+    import logging
+    caplog.set_level(logging.INFO)
+    tg = _tg(proxy)
+    assert tg.verify()
+    assert "бот @moex_watch_bot, канал «MOEX alerts» (channel" in caplog.text
+    assert tg.check("x")
+    assert "опубликовано в «MOEX alerts» (channel)" in caplog.text
+
+
+def test_verify_bot_without_post_rights(proxy, caplog, monkeypatch):
+    monkeypatch.setitem(MEMBER, "status", "member")
+    monkeypatch.setitem(MEMBER, "can_post_messages", False)
+    assert not _tg(proxy).verify()
+    assert "без права публикации" in caplog.text
+
+
+def test_message_to_personal_chat_is_flagged(proxy, caplog, monkeypatch):
+    monkeypatch.setitem(CHAT, "type", "private")
+    tg = _tg(proxy, channel="-1001234567890")
+    assert tg.check("x")
+    assert "а не в канал" in caplog.text
+
+
+def test_missing_settings_are_reported(monkeypatch, caplog, tmp_path):
+    from moex_watcher import cli
+
+    monkeypatch.chdir(tmp_path)
+    for v in ("TELEGRAM_TOKEN", "TELEGRAM_CHANNEL", "TELEGRAM_CHAT_ID"):
+        monkeypatch.delenv(v, raising=False)
+    monkeypatch.setenv("TELEGRAM_TOKEN", "1:T")
+    n = cli.build_notifier(load_config(None))
+    assert not any(isinstance(x, TelegramNotifier) for x in n.notifiers)
+    assert "Telegram ВЫКЛЮЧЕН: не задано TELEGRAM_CHANNEL" in caplog.text

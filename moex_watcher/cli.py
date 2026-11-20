@@ -18,13 +18,21 @@ from .notifiers import ConsoleNotifier, JsonlNotifier, MultiNotifier, TelegramNo
 from .volatility import format_table, rank_historical, rank_intraday
 
 
+log = logging.getLogger("moex_watcher")
+
+
 def build_notifier(cfg: Config) -> MultiNotifier:
     ns = []
     if cfg.console:
         ns.append(ConsoleNotifier())
     if cfg.alerts_log:
         ns.append(JsonlNotifier(cfg.alerts_log))
-    if cfg.telegram_token and cfg.telegram_channel:
+    missing = [n for n, v in (("TELEGRAM_TOKEN", cfg.telegram_token), ("TELEGRAM_CHANNEL", cfg.telegram_channel))
+               if not v]
+    if missing:
+        log.warning("Telegram ВЫКЛЮЧЕН: не задано %s — уведомления идут только в консоль/журнал. "
+                    "Проверьте .env и что контейнер пересобран/перезапущен", " и ".join(missing))
+    else:
         ns.append(TelegramNotifier(cfg.telegram_token, cfg.telegram_channel, proxy=cfg.telegram_proxy,
                                    proxy_user=cfg.telegram_proxy_user,
                                    proxy_password=cfg.telegram_proxy_password,
@@ -61,13 +69,16 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
         if tg is None:
             print("Telegram не настроен: задайте TELEGRAM_TOKEN и TELEGRAM_CHANNEL")
             return 1
-        ok = tg.check("moex-watcher: проверка канала уведомлений ✅")
+        ok = tg.verify() and tg.check("moex-watcher: проверка канала уведомлений ✅")
         print(f"Telegram: сообщение опубликовано в {tg.chat_id}" if ok
               else "Telegram: отправить не удалось, см. лог")
         return 0 if ok else 1
     client = IssClient(login=cfg.iss_login, password=cfg.iss_password)
     w = Watcher(cfg, client, HistoryStore(cfg.db_path), notifier)
-    logging.getLogger(__name__).info("Отслеживаю: %s", ", ".join(m.board for m in cfg.markets))
+    log.info("Отслеживаю: %s", ", ".join(m.board for m in cfg.markets))
+    tg = next((n for n in notifier.notifiers if isinstance(n, TelegramNotifier)), None)
+    if tg is not None and not tg.verify():
+        log.error("Telegram: проверка не пройдена — сообщения в канал, скорее всего, не дойдут (см. выше)")
     notifier.send_status(startup_message(cfg))
     w.run(once=args.once)
     return 0

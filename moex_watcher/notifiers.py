@@ -233,7 +233,8 @@ class TelegramNotifier:
                  api_base: str = "https://api.telegram.org", session: requests.Session | None = None,
                  retries: int = 3, proxy_ca: str | None = None, batch_sec: float = 60.0,
                  max_lines: int = 30, clock=time.monotonic) -> None:
-        self.url = f"{api_base.rstrip('/')}/bot{token}/sendMessage"
+        self.api = f"{api_base.rstrip('/')}/bot{token}"
+        self.url = f"{self.api}/sendMessage"
         self.chat_id = normalize_channel(channel)
         # Сигналы копятся batch_sec секунд и уходят одним сообщением
         self.batch_sec = batch_sec
@@ -256,12 +257,12 @@ class TelegramNotifier:
                 self.session.verify = _combined_ca_bundle(proxy_ca)
             log.info("Telegram: запросы через прокси %s", self.proxy_display)
 
-    def _post(self, text: str) -> bool:
-        payload = {"chat_id": self.chat_id, "text": text, "parse_mode": "HTML",
-                   "disable_web_page_preview": True}
+    def _call(self, method: str, payload: dict) -> dict | None:
+        """Вызов Bot API через прокси. Возвращает result или None (причина пишется в лог)."""
+        url = f"{self.api}/{method}"
         for attempt in range(1, self.retries + 1):
             try:
-                r = self.session.post(self.url, timeout=20, json=payload)
+                r = self.session.post(url, timeout=20, json=payload)
             except requests.exceptions.ProxyError as e:
                 log.warning("Telegram: ошибка прокси %s (%s), попытка %d/%d", self.proxy_display,
                             type(e).__name__, attempt, self.retries)
@@ -269,10 +270,17 @@ class TelegramNotifier:
                 log.warning("Telegram недоступен: %s, попытка %d/%d", type(e).__name__, attempt, self.retries)
             else:
                 if r.status_code == 200:
-                    return True
+                    try:
+                        data = r.json()
+                    except ValueError:
+                        data = {}
+                    if data.get("ok"):
+                        return data.get("result") or {}
+                    log.error("Telegram %s: неожиданный ответ %s", method, r.text[:200])
+                    return None
                 if r.status_code == 407:
                     log.error("Telegram: прокси отклонил логин/пароль (407)")
-                    return False
+                    return None
                 if r.status_code == 429:
                     try:
                         wait = float(r.json().get("parameters", {}).get("retry_after", 5))
@@ -281,15 +289,56 @@ class TelegramNotifier:
                     log.warning("Telegram: лимит запросов, жду %.0f с", wait)
                     time.sleep(min(wait, 60))
                     continue
+                if r.status_code == 401:
+                    log.error("Telegram: неверный TELEGRAM_TOKEN (401 Unauthorized)")
+                    return None
                 if r.status_code < 500:
                     desc = _describe(r)
                     hint = next((h for k, h in CHANNEL_HINTS if k in desc.lower()), None)
-                    log.error("Telegram %s (%s): %s%s", r.status_code, self.chat_id, desc,
+                    log.error("Telegram %s %s (%s): %s%s", method, r.status_code, self.chat_id, desc,
                               f" — {hint}" if hint else "")
-                    return False
+                    return None
                 log.warning("Telegram: %s, попытка %d/%d", r.status_code, attempt, self.retries)
             time.sleep(min(2 ** attempt, 10))
-        return False
+        log.error("Telegram %s: не удалось после %d попыток", method, self.retries)
+        return None
+
+    def _post(self, text: str) -> bool:
+        res = self._call("sendMessage", {"chat_id": self.chat_id, "text": text, "parse_mode": "HTML",
+                                         "disable_web_page_preview": True})
+        if res is None:
+            return False
+        chat = res.get("chat") or {}
+        where = chat.get("title") or chat.get("username") or chat.get("id") or self.chat_id
+        log.info("Telegram: опубликовано в «%s» (%s), %d симв.", where, chat.get("type", "?"), len(text))
+        if chat.get("type") and chat["type"] != "channel":
+            log.warning("Telegram: сообщение ушло в чат типа «%s», а не в канал — проверьте TELEGRAM_CHANNEL",
+                        chat["type"])
+        return True
+
+    def verify(self) -> bool:
+        """Проверка при старте: токен, доступность канала, права бота на публикацию."""
+        me = self._call("getMe", {})
+        if me is None:
+            return False
+        bot = f"@{me.get('username')}"
+        chat = self._call("getChat", {"chat_id": self.chat_id})
+        if chat is None:
+            log.error("Telegram: бот %s не видит канал %s", bot, self.chat_id)
+            return False
+        title, ctype = chat.get("title") or chat.get("username") or self.chat_id, chat.get("type")
+        if ctype != "channel":
+            log.warning("Telegram: %s — это «%s», а не канал", self.chat_id, ctype)
+        member = self._call("getChatMember", {"chat_id": self.chat_id, "user_id": me.get("id")})
+        status = (member or {}).get("status")
+        if ctype == "channel" and (status != "administrator" or not member.get("can_post_messages", False)):
+            if status != "creator":
+                log.error("Telegram: бот %s в канале «%s» имеет статус «%s» без права публикации — "
+                          "сделайте его администратором с правом «Публикация сообщений»", bot, title, status)
+                return False
+        log.info("Telegram: бот %s, канал «%s» (%s, id %s), статус бота: %s, прокси: %s, окно склейки %g с",
+                 bot, title, ctype, chat.get("id"), status, self.proxy_display or "нет", self.batch_sec)
+        return True
 
     def send_alerts(self, alerts: list[Alert]) -> None:
         for a in alerts:
@@ -297,6 +346,9 @@ class TelegramNotifier:
             self._pending[a.quote.key] = merge_alerts(old, a) if old else a
         if alerts and self._since is None:
             self._since = self._clock()
+        if alerts:
+            log.info("Telegram: в очереди %d инструм., отправка не позже чем через %.0f с", len(self._pending),
+                     max(0.0, self.batch_sec - (self._clock() - self._since)))
         self.flush()
 
     def send_text(self, text: str) -> None:
@@ -318,6 +370,7 @@ class TelegramNotifier:
         alerts, digest = list(self._pending.values()), self._digest
         self._pending, self._digest, self._since = {}, None, None
         if alerts or digest:
+            log.info("Telegram: отправляю пачку — сигналов %d%s", len(alerts), ", со сводкой" if digest else "")
             self._post(format_batch(alerts, digest, max_lines=self.max_lines))
 
     def send_status(self, text: str) -> None:

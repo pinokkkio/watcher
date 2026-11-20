@@ -5,7 +5,11 @@ import logging
 import os
 import sys
 
+from datetime import datetime
+
+from . import __version__
 from .config import Config, load_config
+from .detectors import MSK
 from .engine import Watcher
 from .history import HistoryStore
 from .iss import IssClient
@@ -20,14 +24,23 @@ def build_notifier(cfg: Config) -> MultiNotifier:
         ns.append(ConsoleNotifier())
     if cfg.alerts_log:
         ns.append(JsonlNotifier(cfg.alerts_log))
-    if cfg.telegram_token and cfg.telegram_chat_id:
-        ns.append(TelegramNotifier(cfg.telegram_token, cfg.telegram_chat_id, proxy=cfg.telegram_proxy,
+    if cfg.telegram_token and cfg.telegram_channel:
+        ns.append(TelegramNotifier(cfg.telegram_token, cfg.telegram_channel, proxy=cfg.telegram_proxy,
                                    proxy_user=cfg.telegram_proxy_user,
                                    proxy_password=cfg.telegram_proxy_password,
                                    proxy_ca=cfg.telegram_proxy_ca, api_base=cfg.telegram_api_base))
     if cfg.webhook_url:
         ns.append(WebhookNotifier(cfg.webhook_url))
     return MultiNotifier(ns)
+
+
+def startup_message(cfg: Config) -> str:
+    now = datetime.now(MSK).strftime("%d.%m.%Y %H:%M")
+    delay = "без задержки (MOEX Passport)" if cfg.iss_login else "с задержкой ~15 мин"
+    markets = "\n".join(f"• {m.title} ({m.board})" for m in cfg.markets)
+    return (f"🟢 moex-watcher {__version__} запущен — {now} МСК\n\n"
+            f"Слежу за рынками:\n{markets}\n\n"
+            f"Опрос каждые {cfg.poll_interval_sec:g} с, данные MOEX ISS {delay}.")
 
 
 def _select_markets(cfg: Config, markets: str | None) -> None:
@@ -45,14 +58,16 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
     if args.test_notify:
         tg = next((n for n in notifier.notifiers if isinstance(n, TelegramNotifier)), None)
         if tg is None:
-            print("Telegram не настроен: задайте TELEGRAM_TOKEN и TELEGRAM_CHAT_ID")
+            print("Telegram не настроен: задайте TELEGRAM_TOKEN и TELEGRAM_CHANNEL")
             return 1
         ok = tg.check("moex-watcher: проверка канала уведомлений ✅")
-        print("Telegram: сообщение отправлено" if ok else "Telegram: отправить не удалось, см. лог")
+        print(f"Telegram: сообщение опубликовано в {tg.chat_id}" if ok
+              else "Telegram: отправить не удалось, см. лог")
         return 0 if ok else 1
     client = IssClient(login=cfg.iss_login, password=cfg.iss_password)
     w = Watcher(cfg, client, HistoryStore(cfg.db_path), notifier)
     logging.getLogger(__name__).info("Отслеживаю: %s", ", ".join(m.board for m in cfg.markets))
+    notifier.send_status(startup_message(cfg))
     w.run(once=args.once)
     return 0
 

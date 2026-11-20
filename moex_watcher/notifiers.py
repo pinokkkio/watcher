@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import html
 import json
+import re
 import logging
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 from urllib.parse import quote, unquote, urlsplit
@@ -36,6 +38,7 @@ def format_alert(a: Alert, markup: bool = False) -> str:
 class Notifier(Protocol):
     def send_alerts(self, alerts: list[Alert]) -> None: ...
     def send_text(self, text: str) -> None: ...
+    def send_status(self, text: str) -> None: ...
 
 
 class ConsoleNotifier:
@@ -45,6 +48,9 @@ class ConsoleNotifier:
             print(f"[{ts}] {format_alert(a)}\n", flush=True)
 
     def send_text(self, text: str) -> None:
+        print(text + "\n", flush=True)
+
+    def send_status(self, text: str) -> None:
         print(text + "\n", flush=True)
 
 
@@ -66,6 +72,11 @@ class JsonlNotifier:
 
     def send_text(self, text: str) -> None:
         pass
+
+    def send_status(self, text: str) -> None:
+        with self.path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"ts": datetime.now().astimezone().isoformat(), "status": text},
+                               ensure_ascii=False) + "\n")
 
 
 def build_proxy_url(proxy: str, user: str | None = None, password: str | None = None) -> str:
@@ -110,15 +121,44 @@ def _combined_ca_bundle(extra_ca: str) -> str:
     return tmp.name
 
 
+def normalize_channel(value: str) -> str:
+    """Приводит адрес канала к виду, который понимает Bot API: "@имя" или числовой id "-100…".
+
+    Принимает: @имя, имя, https://t.me/имя, t.me/имя, -1001234567890."""
+    v = str(value).strip()
+    m = re.match(r"^(?:https?://)?(?:t\.me|telegram\.me)/(?:s/)?([A-Za-z0-9_]+)/?$", v)
+    if m:
+        v = m.group(1)
+    if re.fullmatch(r"-?\d+", v):
+        if not v.startswith("-100"):
+            log.warning("Telegram: %s не похож на id канала (ожидается -100… или @имя) — "
+                        "это личный чат или группа", v)
+        return v
+    name = v.lstrip("@")
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{3,}", name):
+        raise ValueError(f"Некорректный адрес канала: {value!r}. Нужно @имя или -100… "
+                         "(для приватного канала — числовой id, ссылка-приглашение не подходит)")
+    return "@" + name
+
+
+CHANNEL_HINTS = (
+    ("chat not found", "канал не найден — проверьте @имя/id и что бот добавлен в канал"),
+    ("not enough rights", "у бота нет права «Публикация сообщений» в канале"),
+    ("bot is not a member", "бот не добавлен в канал — добавьте его администратором"),
+    ("need administrator rights", "сделайте бота администратором канала с правом публикации"),
+    ("bot was kicked", "бот удалён из канала — добавьте его заново администратором"),
+)
+
+
 class TelegramNotifier:
     LIMIT = 4000
 
-    def __init__(self, token: str, chat_id: str, proxy: str | None = None,
+    def __init__(self, token: str, channel: str, proxy: str | None = None,
                  proxy_user: str | None = None, proxy_password: str | None = None,
                  api_base: str = "https://api.telegram.org", session: requests.Session | None = None,
                  retries: int = 3, proxy_ca: str | None = None) -> None:
         self.url = f"{api_base.rstrip('/')}/bot{token}/sendMessage"
-        self.chat_id = chat_id
+        self.chat_id = normalize_channel(channel)
         self.retries = retries
         self.session = session or requests.Session()
         self.proxy_display = None
@@ -159,7 +199,10 @@ class TelegramNotifier:
                     time.sleep(min(wait, 60))
                     continue
                 if r.status_code < 500:
-                    log.error("Telegram: %s %s", r.status_code, r.text[:300])
+                    desc = _describe(r)
+                    hint = next((h for k, h in CHANNEL_HINTS if k in desc.lower()), None)
+                    log.error("Telegram %s (%s): %s%s", r.status_code, self.chat_id, desc,
+                              f" — {hint}" if hint else "")
                     return False
                 log.warning("Telegram: %s, попытка %d/%d", r.status_code, attempt, self.retries)
             time.sleep(min(2 ** attempt, 10))
@@ -183,8 +226,18 @@ class TelegramNotifier:
     def send_text(self, text: str) -> None:
         self._send_chunks([f"<pre>{html.escape(text)}</pre>"])
 
+    def send_status(self, text: str) -> None:
+        self._post(html.escape(text, quote=False))
+
     def check(self, text: str) -> bool:
         return self._post(text)
+
+
+def _describe(r: requests.Response) -> str:
+    try:
+        return str(r.json().get("description") or r.text[:300])
+    except ValueError:
+        return r.text[:300]
 
 
 class WebhookNotifier:
@@ -206,6 +259,9 @@ class WebhookNotifier:
     def send_text(self, text: str) -> None:
         self._post({"type": "digest", "text": text})
 
+    def send_status(self, text: str) -> None:
+        self._post({"type": "status", "text": text})
+
 
 class MultiNotifier:
     def __init__(self, notifiers: list[Notifier]) -> None:
@@ -219,3 +275,7 @@ class MultiNotifier:
     def send_text(self, text: str) -> None:
         for n in self.notifiers:
             n.send_text(text)
+
+    def send_status(self, text: str) -> None:
+        for n in self.notifiers:
+            n.send_status(text)

@@ -6,7 +6,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 from moex_watcher.config import load_config
-from moex_watcher.notifiers import TelegramNotifier, build_proxy_url, mask_proxy
+from moex_watcher.notifiers import TelegramNotifier, build_proxy_url, mask_proxy, normalize_channel
 
 USER, PASSWORD = "bot user", "p@ss:w/rd#1"
 
@@ -67,13 +67,13 @@ def test_build_proxy_url_escapes_credentials():
 def test_messages_go_through_authenticated_proxy(proxy, monkeypatch):
     monkeypatch.setenv("HTTPS_PROXY", "http://wrong:1")  # должен игнорироваться
     host, port = proxy.server_address
-    tg = TelegramNotifier("123:TOKEN", "42", proxy=f"http://{host}:{port}", proxy_user=USER,
+    tg = TelegramNotifier("123:TOKEN", "@moex_alerts", proxy=f"http://{host}:{port}", proxy_user=USER,
                           proxy_password=PASSWORD, api_base="http://api.telegram.test")
     assert tg.check("привет")
     method, path, auth, body = ProxyHandler.seen[-1]
     assert path == "http://api.telegram.test/bot123:TOKEN/sendMessage"
     assert auth == "Basic " + base64.b64encode(f"{USER}:{PASSWORD}".encode()).decode()
-    assert json.loads(body) == {"chat_id": "42", "text": "привет", "parse_mode": "HTML",
+    assert json.loads(body) == {"chat_id": "@moex_alerts", "text": "привет", "parse_mode": "HTML",
                                 "disable_web_page_preview": True}
 
 
@@ -98,13 +98,13 @@ def test_https_api_uses_connect_with_credentials(proxy, monkeypatch):
 
 def test_env_overrides(monkeypatch):
     monkeypatch.setenv("TELEGRAM_TOKEN", "tok")
-    monkeypatch.setenv("TELEGRAM_CHAT_ID", "-100")
+    monkeypatch.setenv("TELEGRAM_CHANNEL", "-100")
     monkeypatch.setenv("TELEGRAM_PROXY", "https://p:443")
     monkeypatch.setenv("TELEGRAM_PROXY_USER", "u")
     monkeypatch.setenv("TELEGRAM_PROXY_PASSWORD", "pw")
     monkeypatch.setenv("WATCH_MARKETS", "shares,futures")
     cfg = load_config(None)
-    assert (cfg.telegram_token, cfg.telegram_chat_id, cfg.telegram_proxy) == ("tok", "-100", "https://p:443")
+    assert (cfg.telegram_token, cfg.telegram_channel, cfg.telegram_proxy) == ("tok", "-100", "https://p:443")
     assert (cfg.telegram_proxy_user, cfg.telegram_proxy_password) == ("u", "pw")
     assert [m.key for m in cfg.markets] == ["shares", "futures"]
 
@@ -140,3 +140,72 @@ def test_tls_proxy_is_verified_and_authenticated(tmp_path, monkeypatch):
         assert auth == "Basic " + base64.b64encode(f"{USER}:{PASSWORD}".encode()).decode()
     finally:
         srv.shutdown()
+
+
+def test_normalize_channel(caplog):
+    assert normalize_channel("@moex_alerts") == "@moex_alerts"
+    assert normalize_channel("moex_alerts") == "@moex_alerts"
+    assert normalize_channel("https://t.me/moex_alerts") == "@moex_alerts"
+    assert normalize_channel("t.me/moex_alerts/") == "@moex_alerts"
+    assert normalize_channel(" -1001234567890 ") == "-1001234567890"
+    assert "не похож на id канала" not in caplog.text
+    assert normalize_channel("123456789") == "123456789"  # работает, но предупреждаем
+    assert "не похож на id канала" in caplog.text
+    for bad in ("https://t.me/+AbCdEf", "@x", "канал"):
+        with pytest.raises(ValueError):
+            normalize_channel(bad)
+
+
+def test_legacy_chat_id_env(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "@old_name")
+    assert load_config(None).telegram_channel == "@old_name"
+    monkeypatch.setenv("TELEGRAM_CHANNEL", "@new_name")
+    assert load_config(None).telegram_channel == "@new_name"
+
+
+class ChannelErrorHandler(ProxyHandler):
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        out = json.dumps({"ok": False, "error_code": 403,
+                          "description": "Forbidden: bot is not a member of the channel chat"}).encode()
+        self.send_response(403)
+        self.send_header("Content-Length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
+
+
+def test_channel_error_hint(caplog):
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), ChannelErrorHandler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        tg = TelegramNotifier("t", "@moex_alerts", api_base=f"http://127.0.0.1:{srv.server_address[1]}")
+        tg.session.trust_env = False
+        assert not tg.check("x")
+        assert "бот не добавлен в канал" in caplog.text and "@moex_alerts" in caplog.text
+    finally:
+        srv.shutdown()
+
+
+def test_startup_message_published(proxy, monkeypatch, tmp_path):
+    from moex_watcher import cli
+
+    monkeypatch.chdir(tmp_path)  # журнал алертов пишется в ./data
+
+    host, port = proxy.server_address
+    monkeypatch.setenv("TELEGRAM_TOKEN", "1:T")
+    monkeypatch.setenv("TELEGRAM_CHANNEL", "https://t.me/moex_alerts")
+    monkeypatch.setenv("TELEGRAM_PROXY", f"http://{host}:{port}")
+    monkeypatch.setenv("TELEGRAM_PROXY_USER", USER)
+    monkeypatch.setenv("TELEGRAM_PROXY_PASSWORD", PASSWORD)
+    monkeypatch.setenv("TELEGRAM_API_BASE", "http://api.telegram.test")
+    monkeypatch.setenv("WATCH_MARKETS", "shares,futures")
+    monkeypatch.setattr(cli.Watcher, "run", lambda self, once=False: None)  # без опроса биржи
+    monkeypatch.setattr(cli, "HistoryStore", lambda path: None)
+
+    assert cli.main(["watch"]) == 0
+    posted = [json.loads(b) for m, _, _, b in ProxyHandler.seen if m == "POST"]
+    assert len(posted) == 1
+    msg = posted[0]
+    assert msg["chat_id"] == "@moex_alerts"
+    assert "запущен" in msg["text"] and "Акции (Т+) (TQBR)" in msg["text"] and "RFUD" in msg["text"]
+    assert "Корп. облигации" not in msg["text"]

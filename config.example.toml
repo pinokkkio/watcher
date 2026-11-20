@@ -43,9 +43,9 @@ fast_move_pct = 1.0
 
 [telegram]
 # Секреты удобнее задавать через переменные окружения (.env):
-# TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_PROXY, TELEGRAM_PROXY_USER, TELEGRAM_PROXY_PASSWORD
+# TELEGRAM_TOKEN, TELEGRAM_CHANNEL, TELEGRAM_PROXY, TELEGRAM_PROXY_USER, TELEGRAM_PROXY_PASSWORD
 # token = "123456:ABC..."   # бот от @BotFather
-# chat_id = "123456789"     # ваш chat_id или id канала
+# channel = "@moex_alerts"  # канал: @имя, t.me/имя или -100… (бот — админ канала)
 # Прокси используется только для запросов к Telegram (к бирже — напрямую).
 # proxy = "https://proxy.example.com:3128"   # https:// — TLS до прокси, http:// — CONNECT
 # proxy_user = "user"

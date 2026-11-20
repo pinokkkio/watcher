@@ -35,7 +35,7 @@ cp .env.example .env
 cp config.example.toml config.toml
 ```
 
-В `.env` укажите `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID` и параметры прокси, затем проверьте отправку:
+В `.env` укажите `TELEGRAM_TOKEN`, `TELEGRAM_CHANNEL` и параметры прокси, затем проверьте отправку:
 
 ```bash
 docker compose run --rm watcher watch --test-notify
@@ -61,6 +61,23 @@ docker compose run --rm watcher -m shares volatile --mode z
 `docker compose exec watcher tail -f /app/data/alerts.jsonl`. Контейнер работает от непривилегированного
 пользователя, часовой пояс — Europe/Moscow.
 
+## Telegram-канал
+
+Уведомления публикуются в канал:
+
+1. Создайте бота у @BotFather и получите токен.
+2. Создайте канал (публичный или приватный).
+3. Добавьте бота в администраторы канала с правом «Публикация сообщений».
+4. Укажите канал в `TELEGRAM_CHANNEL`. Для публичного канала подходит `@имя` или ссылка `t.me/имя`.
+   Для приватного нужен числовой id `-100…`: перешлите любой пост канала боту @userinfobot или
+   @getidsbot. Ссылка-приглашение не подойдёт.
+5. Проверьте: `docker compose run --rm watcher watch --test-notify`.
+
+При запуске `watch` бот публикует в канал сообщение о старте: версию, время, список рынков и
+интервал опроса. Если публикация не удалась, в логе будет причина с подсказкой: бот не добавлен в
+канал, нет прав на публикацию, канал не найден.
+Старое имя переменной `TELEGRAM_CHAT_ID` тоже работает.
+
 ## Telegram через прокси
 
 Все запросы к `api.telegram.org` идут через прокси с логином и паролем, запросы к бирже — напрямую.
@@ -69,7 +86,7 @@ docker compose run --rm watcher -m shares volatile --mode z
 | Переменная | Пример | Описание |
 |---|---|---|
 | `TELEGRAM_TOKEN` | `123456:ABC…` | токен бота от @BotFather |
-| `TELEGRAM_CHAT_ID` | `123456789`, `-100…` | личный чат, группа или канал (бот должен быть добавлен) |
+| `TELEGRAM_CHANNEL` | `@moex_alerts`, `https://t.me/moex_alerts`, `-1001234567890` | канал для уведомлений |
 | `TELEGRAM_PROXY` | `https://proxy.example.com:3128` | `https://` — TLS-соединение до прокси, `http://` — обычный CONNECT-прокси |
 | `TELEGRAM_PROXY_USER` | `user` | логин прокси |
 | `TELEGRAM_PROXY_PASSWORD` | `p@ss:w/rd` | пароль; спецсимволы экранируются автоматически |
@@ -141,7 +158,7 @@ cp config.example.toml config.toml
 ```
 
 Все пороги задаются отдельно для `shares`, `bonds` и `futures`, см. комментарии в
-`config.example.toml`. Для Telegram создайте бота через @BotFather и укажите `token` и `chat_id`.
+`config.example.toml`. Настройка Telegram-канала описана выше.
 
 Дневная история кэшируется в `data/history.sqlite`. Первый запуск загружает около 60 торговых
 дней по каждому режиму, это несколько сотен запросов к ISS. Дальше подгружается только новый день.

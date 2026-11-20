@@ -61,10 +61,10 @@ def test_watcher_end_to_end():
 def test_load_config(tmp_path):
     p = tmp_path / "c.toml"
     p.write_text('[general]\nwatch=["shares","futures"]\npoll_interval_sec=10\n'
-                 '[thresholds.shares]\nfast_move_pct=2.5\n[telegram]\ntoken="x"\nchat_id=123\n', encoding="utf-8")
+                 '[thresholds.shares]\nfast_move_pct=2.5\n[telegram]\ntoken="x"\nchannel="@moex_alerts"\n', encoding="utf-8")
     cfg = load_config(p)
     assert [m.board for m in cfg.markets] == ["TQBR", "RFUD"]
     assert cfg.th("shares").fast_move_pct == 2.5
     assert cfg.th("shares").day_levels == [3.0, 5.0, 7.0, 10.0, 15.0]
     assert cfg.th("bonds").fast_move_pct == 0.7
-    assert cfg.telegram_chat_id == "123"
+    assert cfg.telegram_channel == "@moex_alerts"

@@ -62,7 +62,7 @@ class Config:
     digest_top: int = 10
     console: bool = True
     telegram_token: str | None = None
-    telegram_chat_id: str | None = None
+    telegram_channel: str | None = None  # канал: @имя, t.me/имя или -100…
     telegram_proxy: str | None = None  # http(s)://host:port — только для запросов к Telegram
     telegram_proxy_user: str | None = None
     telegram_proxy_password: str | None = None
@@ -87,7 +87,8 @@ def load_config(path: str | Path | None) -> Config:
 # Переменные окружения перекрывают файл — удобно для секретов в Docker.
 ENV_MAP = {
     "TELEGRAM_TOKEN": "telegram_token",
-    "TELEGRAM_CHAT_ID": "telegram_chat_id",
+    "TELEGRAM_CHAT_ID": "telegram_channel",  # старое имя, оставлено для совместимости
+    "TELEGRAM_CHANNEL": "telegram_channel",
     "TELEGRAM_PROXY": "telegram_proxy",
     "TELEGRAM_PROXY_USER": "telegram_proxy_user",
     "TELEGRAM_PROXY_PASSWORD": "telegram_proxy_password",
@@ -142,7 +143,8 @@ def _apply_file(cfg: Config, path: str | Path) -> None:
 
     tg = raw.get("telegram", {})
     cfg.telegram_token = tg.get("token") or None
-    cfg.telegram_chat_id = str(tg["chat_id"]) if tg.get("chat_id") else None
+    channel = tg.get("channel") or tg.get("chat_id")
+    cfg.telegram_channel = str(channel) if channel else None
     cfg.telegram_proxy = tg.get("proxy") or None
     cfg.telegram_proxy_user = tg.get("proxy_user") or None
     cfg.telegram_proxy_password = tg.get("proxy_password") or None

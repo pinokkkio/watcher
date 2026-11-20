@@ -14,8 +14,8 @@ from .markets import DEFAULT_MARKETS, MarketSpec
 class Thresholds:
     # «Сильное движение» — абсолютные пороги в %
     day_levels: list[float] = field(default_factory=lambda: [3.0, 5.0, 7.0, 10.0, 15.0])
-    fast_window_min: float = 5.0  # окно для быстрых движений, минут
-    fast_move_pct: float = 1.5  # изменение за окно, %
+    fast_window_min: float = 15.0  # окно текущего движения, минут
+    fast_move_pct: float = 2.0  # движение от мин./макс. за окно до текущей цены, %
     # «Аномалия» — относительно собственной волатильности и оборота инструмента
     z_day: float = 3.0  # дневное изменение в сигмах дневной волатильности
     z_fast: float = 4.0  # изменение за окно в сигмах (σ_дня · √(окно/сессия))
@@ -38,14 +38,28 @@ class Thresholds:
 DEFAULT_THRESHOLDS: dict[str, Thresholds] = {
     "shares": Thresholds(),
     "bonds": Thresholds(
-        day_levels=[1.0, 2.0, 3.0, 5.0, 10.0], fast_move_pct=0.7, z_day=3.5, z_fast=5.0,
+        day_levels=[1.0, 2.0, 3.0, 5.0, 10.0], fast_move_pct=1.0, z_day=3.5, z_fast=5.0,
         min_value_today=1_000_000, min_avg_value=3_000_000, session_end="18:50",
     ),
     "futures": Thresholds(
-        day_levels=[2.0, 4.0, 6.0, 10.0], fast_move_pct=1.0, min_value_today=10_000_000,
+        day_levels=[2.0, 4.0, 6.0, 10.0], fast_move_pct=1.5, min_value_today=10_000_000,
         min_avg_value=50_000_000, session_start="09:00",
     ),
 }
+
+
+ALL_SIGNALS = ("STRONG_DAY", "ANOMALY_DAY", "FAST_MOVE", "ANOMALY_FAST", "VOLUME_SPIKE")
+# Пока — только текущие движения за окно; дневные сигналы включаются через signals / WATCH_SIGNALS
+DEFAULT_SIGNALS = frozenset({"FAST_MOVE", "ANOMALY_FAST"})
+
+
+def parse_signals(value: str | list[str]) -> frozenset[str]:
+    items = value.split(",") if isinstance(value, str) else value
+    sig = frozenset(x.strip().upper() for x in items if x.strip())
+    bad = sig - set(ALL_SIGNALS)
+    if bad:
+        raise ValueError(f"Неизвестные сигналы: {sorted(bad)}. Доступны: {', '.join(ALL_SIGNALS)}")
+    return sig
 
 
 @dataclass
@@ -58,7 +72,8 @@ class Config:
     history_days: int = 60
     db_path: str = "data/history.sqlite"
     alerts_log: str | None = "data/alerts.jsonl"
-    digest_interval_min: float = 60.0  # периодическая сводка самых волатильных; 0 — выкл.
+    signals: frozenset[str] = DEFAULT_SIGNALS
+    digest_interval_min: float = 0.0  # периодическая сводка самых волатильных, минут; 0 — выкл.
     digest_top: int = 10
     console: bool = True
     telegram_token: str | None = None
@@ -111,6 +126,10 @@ def _apply_env(cfg: Config) -> None:
                            ("TELEGRAM_MAX_LINES", "telegram_max_lines", int)):
         if os.environ.get(env):
             setattr(cfg, attr, typ(os.environ[env]))
+    if os.environ.get("WATCH_SIGNALS"):
+        cfg.signals = parse_signals(os.environ["WATCH_SIGNALS"])
+    if os.environ.get("DIGEST_INTERVAL_MIN"):
+        cfg.digest_interval_min = float(os.environ["DIGEST_INTERVAL_MIN"])
     if os.environ.get("WATCH_MARKETS"):
         keys = [k.strip() for k in os.environ["WATCH_MARKETS"].split(",") if k.strip()]
         bad = [k for k in keys if k not in DEFAULT_MARKETS]
@@ -128,6 +147,8 @@ def _apply_file(cfg: Config, path: str | Path) -> None:
               "digest_top", "console"):
         if k in general:
             setattr(cfg, k, general[k])
+    if "signals" in general:
+        cfg.signals = parse_signals(general["signals"])
     if general.get("alerts_log") == "":
         cfg.alerts_log = None
 

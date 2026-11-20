@@ -7,7 +7,10 @@ poll_interval_sec = 30        # период опроса
 history_days = 60             # глубина истории для σ и среднего оборота, торговых дней
 db_path = "data/history.sqlite"
 alerts_log = "data/alerts.jsonl"   # "" — не писать журнал
-digest_interval_min = 60      # сводка «самые волатильные сегодня»; 0 — выключить
+# Какие сигналы слать. Сейчас — только текущие движения за окно (fast_window_min).
+# Доступны: FAST_MOVE, ANOMALY_FAST (за окно), STRONG_DAY, ANOMALY_DAY, VOLUME_SPIKE (за день)
+signals = ["FAST_MOVE", "ANOMALY_FAST"]
+digest_interval_min = 0       # сводка «самые волатильные сегодня» раз в N минут; 0 — выключена
 digest_top = 10
 console = true
 
@@ -15,22 +18,22 @@ console = true
 # Указывайте только то, что хотите поменять.
 [thresholds.shares]
 day_levels = [3, 5, 7, 10, 15]   # % к закрытию прошлого дня — «сильное движение»
-fast_window_min = 5              # окно быстрого движения, мин
-fast_move_pct = 1.5              # % за окно — «сильное быстрое движение»
+fast_window_min = 15             # окно текущего движения, мин
+fast_move_pct = 2.0              # % от мин./макс. за окно до текущей цены
 z_day = 3.0                      # аномалия: дневное изменение в σ
-z_fast = 4.0                     # аномалия: изменение за окно в σ
+z_fast = 4.0                     # аномалия: движение за окно в σ (σ дня, приведённая к окну)
 rvol = 3.0                       # аномалия: оборот ×N к норме на это время
 min_value_today = 3_000_000      # фильтр ликвидности: оборот сегодня, ₽
 min_avg_value = 10_000_000       # фильтр ликвидности: средний дневной оборот, ₽
-cooldown_min = 15
+cooldown_min = 15                # пауза по бумаге в ту же сторону (разворот и удвоение — сразу)
 
 [thresholds.bonds]
 day_levels = [1, 2, 3, 5, 10]
-fast_move_pct = 0.7
+fast_move_pct = 1.0
 
 [thresholds.futures]
 day_levels = [2, 4, 6, 10]
-fast_move_pct = 1.0
+fast_move_pct = 1.5
 
 # Свой режим торгов, например фьючерсы на юань отдельно не нужны,
 # а вот акции в режиме T+ USD или другие доски — так:

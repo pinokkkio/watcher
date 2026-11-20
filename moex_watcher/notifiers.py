@@ -37,6 +37,7 @@ def format_alert(a: Alert, markup: bool = False) -> str:
 
 MARKET_TAG = {"ofz": "ОФЗ", "corp_bonds": "обл.", "futures": "фьюч.", "etf": "БПИФ"}
 # порядок причин в строке: день → короткое окно → объём
+DAY_KINDS = {"STRONG_DAY", "ANOMALY_DAY", "VOLUME_SPIKE"}
 KIND_ORDER = ["STRONG_DAY", "ANOMALY_DAY", "FAST_MOVE", "ANOMALY_FAST", "VOLUME_SPIKE"]
 
 
@@ -55,13 +56,20 @@ def alert_line(a: Alert) -> str:
     """Одна строка на инструмент (HTML)."""
     q = a.quote
     chg = q.change_pct
-    icon = "🟢" if (chg or 0) >= 0 else "🔴"
+    # цвет — по направлению текущего движения, а не дня
+    move = next((r.move_pct for r in a.reasons if r.move_pct is not None), None)
+    up = move >= 0 if move is not None else (chg or 0) >= 0
+    icon = "🟢" if up else "🔴"
     tag = MARKET_TAG.get(q.market)
     name = html.escape(q.name if q.name != q.secid else "")
     unit = "%" if q.asset_class == "bonds" else ""
     head = f"{icon} <b>{html.escape(q.secid)}</b>" + (f" {name}" if name else "") + (f" [{tag}]" if tag else "")
-    price = f"{q.last:g}{unit}" + (f" ({chg:+.2f}%)" if chg is not None else "")
-    details = "; ".join(html.escape(r.short or r.text) for r in sorted(a.reasons, key=lambda r: _kind_rank(r.kind)))
+    # изменение за день — только если в строке есть дневные сигналы
+    day = chg is not None and any(r.kind in DAY_KINDS for r in a.reasons)
+    price = f"{q.last:g}{unit}" + (f" ({chg:+.2f}% за день)" if day else "")
+    ordered = sorted(a.reasons, key=lambda r: _kind_rank(r.kind))
+    details = "; ".join(html.escape(r.short) for r in ordered if r.short) or \
+        "; ".join(html.escape(r.text) for r in ordered)
     return f"{head} {price} — {details}"
 
 
@@ -69,7 +77,9 @@ def format_batch(alerts: list[Alert], digest: str | None = None, now: datetime |
                  max_lines: int = 30, limit: int = 4000) -> str:
     """Одно сообщение: аномалии, затем сильные движения (по убыванию |изменения|), затем сводка."""
     def strength(a: Alert) -> float:
-        return abs(a.quote.change_pct or 0)
+        # по силе текущего движения (σ или %), иначе по дневному изменению
+        nums = [abs(r.move_pct) for r in a.reasons if r.move_pct is not None]
+        return max(nums) if nums else abs(a.quote.change_pct or 0)
 
     anomalies = sorted((a for a in alerts if a.is_anomaly), key=strength, reverse=True)
     strong = sorted((a for a in alerts if not a.is_anomaly), key=strength, reverse=True)

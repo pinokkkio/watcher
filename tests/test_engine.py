@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 
-from moex_watcher.config import Config, load_config
+from moex_watcher.config import ALL_SIGNALS, Config, load_config
 from moex_watcher.detectors import MSK
 from moex_watcher.engine import Watcher
 from moex_watcher.history import HistoryStore
@@ -34,7 +34,7 @@ class Collect:
 
 
 def test_watcher_end_to_end():
-    cfg = Config(markets=[DEFAULT_MARKETS["shares"]], history_days=30)
+    cfg = Config(markets=[DEFAULT_MARKETS["shares"]], history_days=30, signals=frozenset(ALL_SIGNALS))
     src, out = FakeSource(), Collect()
     w = Watcher(cfg, src, HistoryStore(), out)
     w.refresh_baselines(force=True)
@@ -66,5 +66,21 @@ def test_load_config(tmp_path):
     assert [m.board for m in cfg.markets] == ["TQBR", "RFUD"]
     assert cfg.th("shares").fast_move_pct == 2.5
     assert cfg.th("shares").day_levels == [3.0, 5.0, 7.0, 10.0, 15.0]
-    assert cfg.th("bonds").fast_move_pct == 0.7
+    assert cfg.th("bonds").fast_move_pct == 1.0
     assert cfg.telegram_channel == "@moex_alerts"
+
+
+def test_signals_config(tmp_path, monkeypatch):
+    import pytest
+    from moex_watcher.cli import startup_message
+
+    cfg = load_config(None)
+    assert cfg.signals == {"FAST_MOVE", "ANOMALY_FAST"} and cfg.digest_interval_min == 0
+    msg = startup_message(cfg)
+    assert "движение за последние 15 мин: акции ≥2%, облигации ≥1%, фьючерсы ≥1.5%" in msg
+    assert "за день" not in msg
+    monkeypatch.setenv("WATCH_SIGNALS", "fast_move,strong_day")
+    assert load_config(None).signals == {"FAST_MOVE", "STRONG_DAY"}
+    monkeypatch.setenv("WATCH_SIGNALS", "nope")
+    with pytest.raises(ValueError):
+        load_config(None)

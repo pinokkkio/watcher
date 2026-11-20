@@ -1,8 +1,10 @@
 """Детекторы сильных и аномальных движений.
 
+Какие сигналы активны, задаёт Config.signals (по умолчанию только движения за 15 минут).
+
 Сильное движение — превышение абсолютных порогов в %:
   * STRONG_DAY   — изменение к закрытию прошлого дня пересекло очередной уровень (3/5/7/10…%);
-  * FAST_MOVE    — изменение за короткое окно (по умолчанию 5 минут).
+  * FAST_MOVE    — текущее движение: от минимума/максимума за окно (15 мин) до последней цены.
 Аномалия — движение, необычное для самого инструмента:
   * ANOMALY_DAY  — дневное изменение ≥ z_day сигм его исторической дневной волатильности;
   * ANOMALY_FAST — изменение за окно ≥ z_fast сигм, отмасштабированных на длину окна;
@@ -42,7 +44,8 @@ class Detector:
         self._level_hit: dict[tuple[Key, int], int] = {}
         self._z_hit: dict[tuple[Key, int], float] = {}
         self._rvol_hit: dict[Key, float] = {}
-        self._fast_at: dict[Key, datetime] = {}
+        self._fast_at: dict[tuple[Key, int], datetime] = {}  # пауза отдельно для роста и падения
+        self._fast_size: dict[tuple[Key, int], float] = {}
 
     # --- состояние ----------------------------------------------------------
     def _roll_day(self, now: datetime) -> None:
@@ -54,6 +57,7 @@ class Detector:
             self._z_hit.clear()
             self._rvol_hit.clear()
             self._fast_at.clear()
+            self._fast_size.clear()
 
     def _record(self, q: Quote, now: datetime, keep: timedelta) -> None:
         dq = self.prices.setdefault(q.key, deque())
@@ -61,19 +65,24 @@ class Detector:
         while dq and now - dq[0][0] > keep:
             dq.popleft()
 
-    def window_return(self, key: Key, now: datetime, window: timedelta) -> tuple[float, float] | None:
-        """(доходность за окно, фактическая длина окна в минутах) или None."""
+    def window_move(self, key: Key, now: datetime, window: timedelta) -> tuple[float, float] | None:
+        """Текущее движение: от минимума (рост) или максимума (падение) за окно до последней цены.
+
+        Возвращает (доходность, минут от экстремума до сейчас) — берётся большее по модулю."""
         dq = self.prices.get(key)
         if not dq or len(dq) < 2:
             return None
-        start = next(((t, p) for t, p in dq if now - t <= window), None)
-        if start is None:
+        pts = [(t, p) for t, p in dq if now - t <= window and p > 0]
+        if len(pts) < 2:
             return None
-        t0, p0 = start
-        span = (now - t0).total_seconds() / 60
-        if span < window.total_seconds() / 60 * 0.5 or p0 <= 0:
+        last = pts[-1][1]
+        t_lo, lo = min(pts, key=lambda x: (x[1], -x[0].timestamp()))  # самый поздний минимум
+        t_hi, hi = max(pts, key=lambda x: (x[1], x[0].timestamp()))  # самый поздний максимум
+        up, down = last / lo - 1.0, last / hi - 1.0
+        ret, t0 = (up, t_lo) if abs(up) >= abs(down) else (down, t_hi)
+        if ret == 0:
             return None
-        return dq[-1][1] / p0 - 1.0, span
+        return ret, (now - t0).total_seconds() / 60
 
     # --- основной метод -----------------------------------------------------
     def process(
@@ -111,18 +120,19 @@ class Detector:
         key = q.key
         sigma = base.sigma_daily if base and base.sigma_daily > 0 else None
 
+        enabled = self.cfg.signals
         chg = q.change_pct
-        if chg is not None and chg != 0:
+        if chg is not None and chg != 0 and (enabled & {"STRONG_DAY", "ANOMALY_DAY"}):
             sign = 1 if chg > 0 else -1
             # 1. Сильное дневное движение: пересечение очередного уровня
             lvl = max((i for i, lv in enumerate(th.day_levels) if abs(chg) >= lv), default=-1)
-            if lvl >= 0 and lvl > self._level_hit.get((key, sign), -1):
+            if "STRONG_DAY" in enabled and lvl >= 0 and lvl > self._level_hit.get((key, sign), -1):
                 self._level_hit[(key, sign)] = lvl
                 reasons.append(Reason("STRONG_DAY",
                                       f"{_fmt_pct(chg)} за день (порог {th.day_levels[lvl]:g}%)", False,
                                       f"{'≥' if sign > 0 else '≤'}{sign * th.day_levels[lvl]:+g}% за день"))
             # 2. Аномальное дневное движение в сигмах
-            if sigma and q.log_change is not None:
+            if "ANOMALY_DAY" in enabled and sigma and q.log_change is not None:
                 z = q.log_change / sigma
                 prev = self._z_hit.get((key, sign))
                 if abs(z) >= th.z_day and (prev is None or abs(z) >= prev + th.z_step):
@@ -131,27 +141,38 @@ class Detector:
                                           f"{z:+.1f}σ за день (обычная дневная σ {sigma * 100:.2f}%)", True,
                                           f"{z:+.1f}σ за день"))
 
-        # 3/4. Быстрое движение за окно
-        wr = self.window_return(key, now, window)
-        last_fast = self._fast_at.get(key)
-        if wr is not None and (last_fast is None or now - last_fast >= timedelta(minutes=th.cooldown_min)):
+        # 3/4. Текущее движение за окно (по умолчанию 15 мин)
+        wr = self.window_move(key, now, window)
+        if wr is not None and (enabled & {"FAST_MOVE", "ANOMALY_FAST"}):
             ret, span = wr
+            mins = f"{span:.0f} мин" if span >= 1 else "<1 мин"
             fast: list[Reason] = []
-            if abs(ret) * 100 >= th.fast_move_pct:
-                fast.append(Reason("FAST_MOVE", f"{_fmt_pct(ret * 100)} за {span:.0f} мин", False,
-                                   f"{ret * 100:+.1f}% за {span:.0f} мин"))
-            if sigma and ret > -1:
+            if "FAST_MOVE" in enabled and abs(ret) * 100 >= th.fast_move_pct:
+                fast.append(Reason("FAST_MOVE", f"{_fmt_pct(ret * 100)} за {mins}", False,
+                                   f"{ret * 100:+.1f}% за {mins}", ret * 100))
+            if "ANOMALY_FAST" in enabled and sigma and ret > -1:
                 zf = math.log1p(ret) / (sigma * math.sqrt(th.fast_window_min / th.session_minutes))
                 if abs(zf) >= th.z_fast:
+                    # одна запись в строке: «+2.2% за 4 мин (4.6σ)»; если сработал и порог в %,
+                    # σ дописывается к нему, а у аномалии краткая форма пустая
+                    combined = f"{ret * 100:+.1f}% за {mins} ({abs(zf):.1f}σ)"
+                    if fast:
+                        fast[0].short = combined
                     fast.append(Reason("ANOMALY_FAST",
-                                       f"{zf:+.1f}σ за {span:.0f} мин ({_fmt_pct(ret * 100)})", True,
-                                       f"{zf:+.1f}σ за {span:.0f} мин"))
-            if fast:
-                self._fast_at[key] = now
+                                       f"{zf:+.1f}σ за {mins} ({_fmt_pct(ret * 100)})", True,
+                                       "" if fast else combined, ret * 100))
+            dkey = (key, 1 if ret > 0 else -1)
+            last_fast = self._fast_at.get(dkey)
+            cooled = last_fast is None or now - last_fast >= timedelta(minutes=th.cooldown_min)
+            # в паузе — только если движение в ту же сторону усилилось вдвое; разворот не глушится
+            grown = abs(ret) >= 2 * self._fast_size.get(dkey, math.inf)
+            if fast and (cooled or grown):
+                self._fast_at[dkey] = now
+                self._fast_size[dkey] = abs(ret)
                 reasons.extend(fast)
 
         # 5. Всплеск оборота
-        if base and base.avg_value > 0 and q.value_today:
+        if "VOLUME_SPIKE" in enabled and base and base.avg_value > 0 and q.value_today:
             expected = base.avg_value * max(session_fraction(now, th), 0.1)
             rv = q.value_today / expected
             prev = self._rvol_hit.get(key)

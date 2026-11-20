@@ -68,6 +68,7 @@ class Reason:
     text: str
     anomaly: bool  # True — аномалия (относительно собственной волатильности/объёма)
     short: str = ""  # краткая форма для сводного сообщения
+    move_pct: float | None = None  # величина текущего движения за окно, % (со знаком)
 
 
 @dataclass(slots=True)

@@ -49,7 +49,24 @@ def startup_message(cfg: Config) -> str:
     markets = "\n".join(f"• {m.title} ({m.board})" for m in cfg.markets)
     return (f"🟢 moex-watcher {__version__} запущен — {now} МСК\n\n"
             f"Слежу за рынками:\n{markets}\n\n"
+            f"Сигналы:\n{signals_description(cfg)}\n\n"
             f"Опрос каждые {cfg.poll_interval_sec:g} с, данные MOEX ISS {delay}.")
+
+
+def signals_description(cfg: Config) -> str:
+    classes = sorted({m.asset_class for m in cfg.markets}, key=["shares", "bonds", "futures"].index)
+    label = {"shares": "акции", "bonds": "облигации", "futures": "фьючерсы"}
+    lines = []
+    if "FAST_MOVE" in cfg.signals:
+        win = cfg.th(classes[0]).fast_window_min if classes else 15
+        parts = ", ".join(f"{label[c]} ≥{cfg.th(c).fast_move_pct:g}%" for c in classes)
+        lines.append(f"• движение за последние {win:g} мин: {parts}")
+    if "ANOMALY_FAST" in cfg.signals:
+        lines.append(f"• необычное для бумаги движение за то же окно: ≥{cfg.th('shares').z_fast:g}σ")
+    day = {"STRONG_DAY": "сильное движение за день", "ANOMALY_DAY": "аномалия за день (σ)",
+           "VOLUME_SPIKE": "всплеск оборота"}
+    lines += [f"• {t}" for k, t in day.items() if k in cfg.signals]
+    return "\n".join(lines) or "• нет (все сигналы выключены)"
 
 
 def _select_markets(cfg: Config, markets: str | None) -> None:

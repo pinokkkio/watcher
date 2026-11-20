@@ -115,7 +115,8 @@ def test_watcher_flushes_on_stop():
     from moex_watcher.history import HistoryStore
     from moex_watcher.markets import DEFAULT_MARKETS
 
-    cfg = Config(markets=[DEFAULT_MARKETS["shares"]], history_days=5, digest_interval_min=0)
+    from moex_watcher.config import ALL_SIGNALS
+    cfg = Config(markets=[DEFAULT_MARKETS["shares"]], history_days=5, signals=frozenset(ALL_SIGNALS))
     w = Watcher(cfg, Src(), HistoryStore(), MultiNotifier([tg]))
     w.run(once=True)
     assert len(sent) == 1 and "SBER" in sent[0]
